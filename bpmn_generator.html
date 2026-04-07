@@ -662,15 +662,28 @@ async function generate() {
 // bpmn-auto-layoutを使った自動レイアウト
 async function applyAutoLayout(xml) {
   try {
-    // BpmnApp.BpmnAutoLayout はbundle.jsでwindowに公開済み
-    const AutoLayout = window.BpmnAutoLayout;
-    if (!AutoLayout) throw new Error('BpmnAutoLayout が読み込まれていません');
+    // bundle.js のエクスポート形式を複数パターンで試みる
+    const AutoLayout =
+      window.BpmnAutoLayout ||
+      (window.module && window.module.exports) ||
+      (typeof BpmnAutoLayout !== 'undefined' ? BpmnAutoLayout : null);
+
+    if (!AutoLayout || typeof AutoLayout !== 'function') {
+      // bundle.js の全プロパティからコンストラクタを探す
+      const candidate = Object.values(window).find(
+        v => typeof v === 'function' && v.prototype && typeof v.prototype.layoutProcess === 'function'
+      );
+      if (!candidate) throw new Error('BpmnAutoLayout が読み込まれていません');
+      const layouter = new candidate();
+      return await layouter.layoutProcess(xml);
+    }
+
     const layouter = new AutoLayout();
-    const result = await layouter.layoutProcess(xml);
-    return result;
+    return await layouter.layoutProcess(xml);
+
   } catch(e) {
     console.warn('autoLayout failed:', e);
-    return xml;
+    return xml;  // レイアウト失敗時はそのまま返す
   }
 }
 
