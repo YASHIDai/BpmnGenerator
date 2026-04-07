@@ -1,0 +1,1143 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@300;400;500;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  :root {
+    --bg: #0d0f14;
+    --surface: #161921;
+    --surface2: #1e2230;
+    --border: #2a2f3d;
+    --accent: #4f9cf9;
+    --accent2: #7c5cfc;
+    --success: #3ecf8e;
+    --warn: #f97316;
+    --text: #e2e8f0;
+    --text-muted: #64748b;
+    --radius: 10px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Noto Sans JP', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  header {
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--surface);
+    flex-shrink: 0;
+  }
+  .logo {
+    width: 28px; height: 28px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    border-radius: 7px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px;
+  }
+  header h1 { font-size: 14px; font-weight: 500; }
+  header .sub { font-size: 11px; color: var(--text-muted); }
+  .badge {
+    margin-left: auto; font-size: 10px; padding: 2px 8px;
+    background: rgba(79,156,249,0.12); color: var(--accent);
+    border: 1px solid rgba(79,156,249,0.25); border-radius: 20px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .main { display: flex; flex: 1; overflow: hidden; }
+
+  .panel-left {
+    width: 320px; flex-shrink: 0;
+    display: flex; flex-direction: column;
+    border-right: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .panel-section { padding: 14px; border-bottom: 1px solid var(--border); }
+  .label {
+    font-size: 10px; font-weight: 500; color: var(--text-muted);
+    text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 7px;
+  }
+  textarea {
+    width: 100%; background: var(--surface2); border: 1px solid var(--border);
+    border-radius: var(--radius); color: var(--text);
+    font-family: 'Noto Sans JP', sans-serif; font-size: 12px;
+    line-height: 1.7; padding: 10px; resize: none; outline: none;
+    transition: border-color 0.2s;
+  }
+  textarea:focus { border-color: var(--accent); }
+  textarea::placeholder { color: var(--text-muted); }
+
+  .examples { display: flex; flex-direction: column; gap: 5px; margin-top: 7px; }
+  .example-btn {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 6px; color: var(--text-muted);
+    font-size: 11px; font-family: 'Noto Sans JP', sans-serif;
+    padding: 6px 10px; text-align: left; cursor: pointer; transition: all 0.15s;
+  }
+  .example-btn:hover { border-color: var(--accent); color: var(--text); }
+
+  .generate-btn {
+    width: 100%; padding: 11px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    border: none; border-radius: var(--radius); color: #fff;
+    font-family: 'Noto Sans JP', sans-serif; font-size: 13px; font-weight: 500;
+    cursor: pointer; transition: opacity 0.2s, transform 0.1s;
+  }
+  .generate-btn:hover { opacity: 0.9; }
+  .generate-btn:active { transform: scale(0.98); }
+  .generate-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .error-bar {
+    display: none; margin-top: 8px; padding: 8px 12px;
+    background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3);
+    border-radius: 8px; font-size: 11px; color: #f87171;
+  }
+
+  .xml-panel { flex: 1; overflow-y: auto; padding: 14px; }
+  .xml-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 7px; }
+  .copy-btn {
+    font-size: 10px; padding: 3px 8px; background: var(--surface2);
+    border: 1px solid var(--border); border-radius: 4px; color: var(--text-muted);
+    cursor: pointer; font-family: 'JetBrains Mono', monospace; transition: all 0.15s;
+  }
+  .copy-btn:hover { border-color: var(--accent); color: var(--accent); }
+  pre#xml-output {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 10px;
+    font-family: 'JetBrains Mono', monospace; font-size: 10px;
+    line-height: 1.6; color: #a5b4cc; white-space: pre-wrap;
+    word-break: break-all; min-height: 60px;
+  }
+
+  .panel-right {
+    flex: 1; display: flex; flex-direction: column;
+    background: var(--bg); overflow: hidden;
+  }
+  .viewer-header {
+    padding: 9px 14px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 8px;
+    background: var(--surface); flex-shrink: 0;
+  }
+  .status-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--text-muted); transition: background 0.3s;
+  }
+  .status-dot.active { background: var(--success); box-shadow: 0 0 5px var(--success); }
+  .status-dot.loading { background: var(--warn); animation: pulse 1s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+  .viewer-title { font-size: 12px; color: var(--text-muted); }
+  .fit-btn {
+    margin-left: auto; font-size: 10px; padding: 3px 8px;
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 4px; color: var(--text-muted); cursor: pointer;
+    font-family: 'JetBrains Mono', monospace; transition: all 0.15s;
+  }
+  .fit-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+  #bpmn-container { flex: 1; position: relative; overflow: hidden; background: #ffffff; }
+  .empty-state {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 10px;
+    color: var(--text-muted); pointer-events: none;
+  }
+  .empty-state .icon { font-size: 40px; opacity: 0.25; }
+  .empty-state p { font-size: 12px; }
+
+  #bpmn-container .bjs-container { background: #ffffff !important; }
+  #bpmn-container .djs-container svg { background: #ffffff !important; }
+  .layout-toggle {
+    display: flex; gap: 6px; margin-top: 10px;
+  }
+  .layout-btn {
+    flex: 1; padding: 6px 0; background: var(--surface2);
+    border: 1px solid var(--border); border-radius: 6px;
+    color: var(--text-muted); font-size: 11px;
+    font-family: 'Noto Sans JP', sans-serif;
+    cursor: pointer; transition: all 0.15s; text-align: center;
+  }
+  .layout-btn:hover { border-color: var(--accent); color: var(--text); }
+  .layout-btn.active {
+    background: rgba(79,156,249,0.15);
+    border-color: var(--accent); color: var(--accent);
+  }
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+<!-- bpmn-js -->
+<script src="https://unpkg.com/bpmn-js@17.11.1/dist/bpmn-navigated-viewer.production.min.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/bpmn-js@17.11.1/dist/assets/bpmn-js.css">
+<link rel="stylesheet" href="https://unpkg.com/bpmn-js@17.11.1/dist/assets/bpmn-font/css/bpmn.css">
+</head>
+<body>
+
+<header>
+  <div class="logo">?</div>
+  <div>
+    <h1>BPMN フロー生成ツール</h1>
+    <div class="sub">日本語 → BPMN 2.0 XML → リアルタイム描画</div>
+  </div>
+  <div class="badge">bpmn-js powered</div>
+</header>
+
+<div class="main">
+  <div class="panel-left">
+    <div class="panel-section">
+      <div class="label">業務フローの説明</div>
+      <textarea id="prompt" rows="7" placeholder="例：市民から申請を受け付け、内容を確認する。不備がない場合は起案決裁を行い、交付決定通知を送付する。不備がある場合は修正を依頼する。…"></textarea>
+      <div class="label" style="margin-top:10px;">サンプル</div>
+      <div class="examples">
+        <button class="example-btn" onclick="loadExample(0)"> 届出手続フロー（転入届）</button>
+        <button class="example-btn" onclick="loadExample(1)"> 証明書発行請求フロー（住民票の写し）</button>
+        <button class="example-btn" onclick="loadExample(2)"> 許認可申請フロー（飲食店営業許可）</button>
+      </div>
+    </div>
+    <div class="panel-section">
+      <div class="label">レイアウト方向</div>
+      <div class="layout-toggle">
+        <button class="layout-btn active" id="btn-horizontal" onclick="setLayout('horizontal')">? 横（左→右）</button>
+        <button class="layout-btn" id="btn-vertical" onclick="setLayout('vertical')">? 縦（上→下）</button>
+      </div>
+    </div>
+    <div class="panel-section">
+      <button class="generate-btn" id="gen-btn" onclick="generate()">? BPMN を生成する</button>
+      <div class="error-bar" id="error-bar"></div>
+    </div>
+    <div class="xml-panel">
+      <div class="xml-header">
+        <div class="label" style="margin:0">生成された BPMN 2.0 XML</div>
+        <button class="copy-btn" onclick="copyXml(event)">コピー</button>
+      </div>
+      <pre id="xml-output">// ここにXMLが表示されます</pre>
+    </div>
+  </div>
+
+  <div class="panel-right">
+    <div class="viewer-header">
+      <div class="status-dot" id="status-dot"></div>
+      <span class="viewer-title" id="viewer-title">フローを生成してください</span>
+      <button class="fit-btn" onclick="fitView()">全体表示</button>
+    </div>
+    <div id="bpmn-container">
+      <div class="empty-state" id="empty-state">
+        <div class="icon">?</div>
+        <p>左のパネルで業務フローを説明して生成してください</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+
+<script>
+const examples = [
+`届出手続フロー（転入届）：
+1. 住民が窓口・郵送・オンラインで届出書類を提出する
+2. 市民課受付担当者が書類の記載内容・添付書類を確認する
+3. 不備がある場合は住民に差し戻し・補正を依頼する
+4. 不備がない場合は内容をシステムに入力・登録する
+5. 関連部門（国民健康保険・国民年金・児童手当など）へ情報を連携する
+6. 必要に応じて住民票・マイナンバーカードの住所変更等の手続きを案内する
+7. 届出受理を住民に通知して完了
+証明書発行請求フロー（住民票の写し）：
+1. 住民が窓口・郵送・オンライン・コンビニで請求書を提出する
+2. 市民課受付担当者が本人確認書類・委任状（代理の場合）を確認する
+3. 本人確認が取れない場合は請求を受け付けず、理由を説明して返却する
+4. 本人確認が取れた場合は請求内容をシステムで確認する
+5. 手数料を徴収する（窓口の場合は現金・電子決済、郵送の場合は定額小為替等）
+6. システムから証明書を発行・印刷する
+7. 内容を確認・押印のうえ、住民に交付して完了
+許認可申請フロー（飲食店営業許可）：
+1. 申請者が事前相談を行い、生活衛生課担当者が必要書類・要件を案内する
+2. 申請者が申請書・添付書類（施設の図面・食品衛生責任者資格証明等）を提出する
+3. 受付担当者が書類の記載内容・添付書類の過不足を確認する
+4. 不備がある場合は申請者に補正を依頼する
+5. 書類審査が完了したら現地調査（施設検査）の日程を調整する
+6. 担当者が施設へ赴き、設備・衛生管理状況等を確認する
+7. 基準を満たさない場合は改善指導を行い、再検査を実施する
+8. 基準を満たした場合は許可書を作成・決裁する
+9. 申請者に許可書を交付して完了`,
+];
+
+function loadExample(i) { document.getElementById('prompt').value = examples[i]; }
+
+let layoutMode = 'horizontal'; // 'horizontal' | 'vertical'
+
+function setLayout(mode) {
+  layoutMode = mode;
+  document.getElementById('btn-horizontal').classList.toggle('active', mode === 'horizontal');
+  document.getElementById('btn-vertical').classList.toggle('active', mode === 'vertical');
+}
+
+let viewer = null;
+
+window.addEventListener('load', function() {
+  viewer = new BpmnJS({ container: '#bpmn-container' });
+});
+
+function initViewer() {
+  if (!viewer) {
+    viewer = new BpmnJS({ container: '#bpmn-container' });
+  }
+}
+
+const SYSTEM_PROMPT = `あなたはBPMN 2.0の専門家です。ユーザーが日本語で説明した業務プロセスを、有効なBPMN 2.0準拠のXMLに変換してください。
+
+## 最重要ルール
+- XMLのみ出力すること。説明文・コードブロック記号（\`\`\`）は一切含めないこと
+- 全要素に bpmn2: プレフィックスを付けること（bpmndi: / dc: / di: はそのまま）
+- 全要素に一意の id（英数字）と name（日本語可）を付与すること
+
+## 名前空間（必ず以下をそのまま使うこと）
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn2:definitions
+  xmlns:bpmn2="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  id="Definitions_1"
+  targetNamespace="http://example.com/bpmn">
+
+## レイアウト方向の判断ルール
+ユーザーのプロンプトに以下のキーワードが含まれる場合に対応するレイアウトを選択すること：
+- 「縦」「上から下」「トップダウン」「縦書き」→ 縦レイアウト（Top to Bottom）
+- 「横」「左から右」「横書き」またはキーワードなし → 横レイアウト（Left to Right）
+
+---
+
+## 【横レイアウト】Left to Right（デフォルト）
+
+### 通常フロー（担当者1名）の座標ルール
+- 要素をx座標方向（左→右）に並べる
+- 開始イベント: x="80" y="200"
+- 各要素のx間隔: タスク120px、ゲートウェイ100px
+
+### スイムレーン（担当者2名以上）の座標ルール
+- isHorizontal="true" を指定
+- Participantサイズ: width="800" height="160"
+- Participantをy座標でずらして縦に並べる
+  - Participant_1: x="80" y="80"
+  - Participant_2: x="80" y="240"
+  - Participant_3: x="80" y="400"
+- 各レーン内タスクはx方向（左→右）に並べる
+
+### 横レイアウトのサンプル（スイムレーンあり）
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn2:definitions
+  xmlns:bpmn2="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  id="Definitions_1" targetNamespace="http://example.com/bpmn">
+  <bpmn2:collaboration id="Collaboration_1">
+    <bpmn2:participant id="Participant_1" name="顧客" processRef="Process_1"/>
+    <bpmn2:participant id="Participant_2" name="営業部門" processRef="Process_2"/>
+  </bpmn2:collaboration>
+  <bpmn2:process id="Process_1" isExecutable="false">
+    <bpmn2:startEvent id="Start_1" name="注文"/>
+    <bpmn2:endEvent id="End_1" name="受取"/>
+    <bpmn2:sequenceFlow id="Flow_1" sourceRef="Start_1" targetRef="End_1"/>
+  </bpmn2:process>
+  <bpmn2:process id="Process_2" isExecutable="false">
+    <bpmn2:startEvent id="Start_2" name="受注"/>
+    <bpmn2:task id="Task_1" name="在庫確認"/>
+    <bpmn2:endEvent id="End_2" name="出荷完了"/>
+    <bpmn2:sequenceFlow id="Flow_2" sourceRef="Start_2" targetRef="Task_1"/>
+    <bpmn2:sequenceFlow id="Flow_3" sourceRef="Task_1" targetRef="End_2"/>
+  </bpmn2:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
+    <bpmndi:BPMNPlane bpmnElement="Collaboration_1">
+      <bpmndi:BPMNShape bpmnElement="Participant_1" isHorizontal="true">
+        <dc:Bounds x="80" y="80" width="800" height="160"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Participant_2" isHorizontal="true">
+        <dc:Bounds x="80" y="240" width="800" height="160"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Start_1">
+        <dc:Bounds x="180" y="142" width="36" height="36"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="End_1">
+        <dc:Bounds x="700" y="142" width="36" height="36"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Start_2">
+        <dc:Bounds x="180" y="302" width="36" height="36"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Task_1">
+        <dc:Bounds x="300" y="280" width="100" height="80"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="End_2">
+        <dc:Bounds x="700" y="302" width="36" height="36"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge bpmnElement="Flow_1">
+        <di:waypoint x="216" y="160"/>
+        <di:waypoint x="700" y="160"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_2">
+        <di:waypoint x="216" y="320"/>
+        <di:waypoint x="300" y="320"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_3">
+        <di:waypoint x="400" y="320"/>
+        <di:waypoint x="700" y="320"/>
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn2:definitions>
+
+---
+
+## 【縦レイアウト】Top to Bottom
+
+### 通常フロー（担当者1名）の座標ルール
+- 要素をy座標方向（上→下）に並べる
+- 基準x座標: 300（中央揃え）
+- 開始イベント: x="282" y="80"
+- タスクのy間隔: 120px
+- 分岐後の並列タスクはx座標をずらして横並び（例: x="150" と x="400"）
+
+### スイムレーン（担当者2名以上）の座標ルール
+- isHorizontal="false" を指定
+- Participantサイズ: width="160" height="600"
+- Participantをx座標でずらして横に並べる
+  - Participant_1: x="80"  y="80"
+  - Participant_2: x="240" y="80"
+  - Participant_3: x="400" y="80"
+- 各レーン内タスクはy方向（上→下）に並べる
+
+### 縦レイアウトのサンプル（スイムレーンなし）
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn2:definitions
+  xmlns:bpmn2="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  id="Definitions_1" targetNamespace="http://example.com/bpmn">
+  <bpmn2:process id="Process_1" isExecutable="false">
+    <bpmn2:startEvent id="Start_1" name="開始"/>
+    <bpmn2:task id="Task_1" name="申請書作成"/>
+    <bpmn2:exclusiveGateway id="GW_1" name="承認？"/>
+    <bpmn2:task id="Task_2" name="承認処理"/>
+    <bpmn2:task id="Task_3" name="差し戻し"/>
+    <bpmn2:endEvent id="End_1" name="完了"/>
+    <bpmn2:sequenceFlow id="Flow_1" sourceRef="Start_1" targetRef="Task_1"/>
+    <bpmn2:sequenceFlow id="Flow_2" sourceRef="Task_1" targetRef="GW_1"/>
+    <bpmn2:sequenceFlow id="Flow_3" name="承認" sourceRef="GW_1" targetRef="Task_2"/>
+    <bpmn2:sequenceFlow id="Flow_4" name="否認" sourceRef="GW_1" targetRef="Task_3"/>
+    <bpmn2:sequenceFlow id="Flow_5" sourceRef="Task_2" targetRef="End_1"/>
+    <bpmn2:sequenceFlow id="Flow_6" sourceRef="Task_3" targetRef="End_1"/>
+  </bpmn2:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
+    <bpmndi:BPMNPlane bpmnElement="Process_1">
+      <bpmndi:BPMNShape bpmnElement="Start_1">
+        <dc:Bounds x="282" y="80" width="36" height="36"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Task_1">
+        <dc:Bounds x="250" y="180" width="100" height="80"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="GW_1" isMarkerVisible="true">
+        <dc:Bounds x="275" y="320" width="50" height="50"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Task_2">
+        <dc:Bounds x="150" y="430" width="100" height="80"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Task_3">
+        <dc:Bounds x="370" y="430" width="100" height="80"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="End_1">
+        <dc:Bounds x="282" y="580" width="36" height="36"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge bpmnElement="Flow_1">
+        <di:waypoint x="300" y="116"/>
+        <di:waypoint x="300" y="180"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_2">
+        <di:waypoint x="300" y="260"/>
+        <di:waypoint x="300" y="320"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_3">
+        <di:waypoint x="275" y="345"/>
+        <di:waypoint x="200" y="345"/>
+        <di:waypoint x="200" y="430"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_4">
+        <di:waypoint x="325" y="345"/>
+        <di:waypoint x="420" y="345"/>
+        <di:waypoint x="420" y="430"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_5">
+        <di:waypoint x="200" y="510"/>
+        <di:waypoint x="200" y="560"/>
+        <di:waypoint x="300" y="560"/>
+        <di:waypoint x="300" y="580"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_6">
+        <di:waypoint x="420" y="510"/>
+        <di:waypoint x="420" y="560"/>
+        <di:waypoint x="300" y="560"/>
+        <di:waypoint x="300" y="580"/>
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn2:definitions>
+
+---
+
+## スイムレーンの共通ルール
+- ユーザーの説明に担当者・部門・役割が2つ以上登場する場合は必ずスイムレーン形式で出力すること
+- collaboration と participant を必ず定義すること
+- 参加者ごとに独立した process を定義すること
+- BPMNDiagramのbpmnElementは必ず Collaboration_1 を指定すること
+
+## ② フローの種類（最重要・厳守）
+- 同一Participant内のフロー → 必ず bpmn2:sequenceFlow を使うこと
+- 異なるParticipant間のフロー → 必ず bpmn2:messageFlow を使うこと（sequenceFlowは絶対に使わない）
+- messageFlowは collaboration 要素の内側に定義すること（process内ではない）
+- BPMNEdgeのmessageFlowには必ず messageVisibleKind="non_initiating" を設定すること
+
+## messageFlowの記述例
+<bpmn2:collaboration id="Collaboration_1">
+  <bpmn2:participant id="Participant_1" name="担当A" processRef="Process_1"/>
+  <bpmn2:participant id="Participant_2" name="担当B" processRef="Process_2"/>
+  <!-- 異なるParticipant間は必ずmessageFlow -->
+  <bpmn2:messageFlow id="MsgFlow_1" sourceRef="Task_A1" targetRef="Task_B1" name="通知"/>
+</bpmn2:collaboration>
+
+## 通常フロー要素のサイズ
+- タスク: width="100" height="80"
+- ゲートウェイ: width="50" height="50"
+- イベント: width="36" height="36"`;
+
+async function generate() {
+  const prompt = document.getElementById('prompt').value.trim();
+  if (!prompt) return;
+
+  initViewer();
+
+  const btn = document.getElementById('gen-btn');
+  const dot = document.getElementById('status-dot');
+  const title = document.getElementById('viewer-title');
+  const errorBar = document.getElementById('error-bar');
+
+  btn.disabled = true;
+  btn.textContent = '? 生成中…';
+  dot.className = 'status-dot loading';
+  title.textContent = 'BPMN XML を生成中…';
+  errorBar.style.display = 'none';
+
+  // Dify API 設定
+  // レイアウト指示をプロンプトに付加（強制指定）
+  const layoutInstruction = layoutMode === 'vertical'
+    ? '\n\n【必須・レイアウト指定】\n' +
+      '- フローは必ず上から下（Top to Bottom）に配置すること\n' +
+      '- x座標方向には並べず、y座標方向に要素を並べること\n' +
+      '- スイムレーンを使う場合はisHorizontal="false"を設定し、Participantをx方向に並べること\n' +
+      '- Participantサイズ: width="160" height="700"'
+    : '\n\n【必須・レイアウト指定】\n' +
+      '- フローは必ず左から右（Left to Right）に配置すること\n' +
+      '- y座標方向には並べず、x座標方向に要素を並べること\n' +
+      '- スイムレーンを使う場合はisHorizontal="true"を設定し、Participantをy方向に並べること\n' +
+      '- Participantサイズ: width="900" height="160"';
+  const promptWithLayout = prompt + layoutInstruction;
+
+  const DIFY_API_KEY = 'ここにDify APIキーを入力';
+  const DIFY_API_URL = 'https://api.dify.ai/v1/workflows/run';
+
+  // Exponential backoffでリトライ
+  const MAX_RETRIES = 4;
+  const BASE_DELAY = 2000; // 2秒
+
+  async function fetchWithRetry(retryCount = 0) {
+    const response = await fetch(DIFY_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${DIFY_API_KEY}`,
+      },
+      body: JSON.stringify({
+        inputs: { business_flow: promptWithLayout },
+        response_mode: 'streaming',
+        user: 'bpmn-user'
+      })
+    });
+
+    // 529(Overloaded) / 504(Timeout) の場合はリトライ
+    if ((response.status === 529 || response.status === 504) && retryCount < MAX_RETRIES) {
+      const delay = BASE_DELAY * Math.pow(2, retryCount); // 2秒, 4秒, 8秒, 16秒
+      title.textContent = `サーバー混雑中… ${retryCount + 1}回目リトライ（${delay/1000}秒後）`;
+      await new Promise(resolve => setTimeout(resolve, delay));
+      return fetchWithRetry(retryCount + 1);
+    }
+
+    if (!response.ok) {
+      const errBody = await response.text().catch(() => '');
+      throw new Error(`API Error: ${response.status} ${errBody}`);
+    }
+    return response;
+  }
+
+  try {
+    const response = await fetchWithRetry();
+
+    // streamingモード: SSEを読み取りworkflow_finishedイベントでXMLを取得
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let xml = '';
+
+    title.textContent = 'ノード処理中…';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop(); // 未完了行を次のループへ
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const jsonStr = line.slice(6).trim();
+        if (!jsonStr || jsonStr === '[DONE]') continue;
+
+        try {
+          const event = JSON.parse(jsonStr);
+
+          // ノード完了時にステータスを更新
+          if (event.event === 'node_finished' && event.data?.title) {
+            title.textContent = `${event.data.title} 完了…`;
+          }
+
+          // ワークフロー完了時にXMLを取得
+          if (event.event === 'workflow_finished') {
+            const outputs = event.data?.outputs;
+            if (outputs) {
+              // 出力変数名を順番に探す
+              xml = outputs.text || outputs.xml || outputs.result
+                 || Object.values(outputs).find(v => typeof v === 'string' && v.includes('bpmn2:')) || '';
+            }
+          }
+        } catch (e) {
+          // JSON parseエラーは無視
+        }
+      }
+    }
+
+    if (!xml) throw new Error('XMLが取得できませんでした。Difyの出力変数を確認してください。');
+
+    xml = xml.replace(/^```xml\n?/, '').replace(/^```\n?/, '').replace(/\n?```$/, '').trim();
+    title.textContent = 'レイアウト計算中…';
+    xml = autoLayout(xml);
+
+    document.getElementById('xml-output').textContent = xml;
+    title.textContent = 'レンダリング中…';
+
+    await viewer.importXML(xml);
+    document.getElementById('empty-state').style.display = 'none';
+    dot.className = 'status-dot active';
+    title.textContent = '生成完了 ?';
+    fitView();
+
+  } catch (err) {
+    dot.className = 'status-dot';
+    title.textContent = 'エラーが発生しました';
+    errorBar.style.display = 'block';
+    errorBar.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '? BPMN を生成する';
+  }
+}
+
+// ============================================================
+// 自動レイアウトエンジン
+// 座標なしXML（論理構造のみ）を受け取り、Boundsとwaypointを計算して付与する
+// ============================================================
+function autoLayout(xml) {
+  try {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(xml, 'application/xml');
+    if (doc.querySelector('parsererror')) return xml;
+
+    const isVertical = layoutMode === 'vertical';
+
+    // --- サイズ定数 ---
+    const SIZE = {
+      task:    { w: 100, h: 80 },
+      gateway: { w: 50,  h: 50 },
+      event:   { w: 40,  h: 40 },
+    };
+    const LANE_W = 160;       // 縦レイアウト時のレーン幅
+    const LANE_H = 160;       // 横レイアウト時のレーン高さ
+    const STEP_X = 140;       // 横方向の要素間隔
+    const STEP_Y = 120;       // 縦方向の要素間隔
+    const MARGIN = 80;        // プール外側余白
+    const START_X = 80;       // プール開始x
+    const START_Y = 80;       // プール開始y
+    const LABEL_W = 30;       // レーンラベル幅
+    const PART_GAP = 20;      // プール間の隙間
+
+    // --- ヘルパー関数 ---
+    const r10 = v => Math.round(v / 10) * 10;
+    const elemSize = type => {
+      if (type.includes('Task') || type === 'task') return SIZE.task;
+      if (type.includes('Gateway')) return SIZE.gateway;
+      return SIZE.event;
+    };
+
+    // --- 要素を収集 ---
+    // Participant, Lane, FlowNode, SequenceFlow, MessageFlow
+    const participants = [...doc.querySelectorAll('participant')];
+    const processes    = [...doc.querySelectorAll('process')];
+    const allFlowNodes = [...doc.querySelectorAll(
+      'startEvent,endEvent,task,userTask,serviceTask,exclusiveGateway,parallelGateway,inclusiveGateway'
+    )];
+    const seqFlows  = [...doc.querySelectorAll('sequenceFlow')];
+    const msgFlows  = [...doc.querySelectorAll('messageFlow')];
+
+    // FlowNodeをIDでマップ
+    const nodeMap = {};
+    allFlowNodes.forEach(n => nodeMap[n.getAttribute('id')] = n);
+
+    // SequenceFlowをIDでマップ
+    const flowMap = {};
+    seqFlows.forEach(f => flowMap[f.getAttribute('id')] = f);
+
+    // ProcessをIDでマップ
+    const processMap = {};
+    processes.forEach(p => processMap[p.getAttribute('id')] = p);
+
+    // ParticipantをIDでマップ
+    const partMap = {};
+    participants.forEach(p => partMap[p.getAttribute('id')] = p);
+
+    // --- レーンとFlowNode対応を収集 ---
+    const laneNodes = {}; // laneId -> [nodeId, ...]
+    const nodeInLane = {}; // nodeId -> laneId
+    doc.querySelectorAll('lane').forEach(lane => {
+      const lid = lane.getAttribute('id');
+      laneNodes[lid] = [...lane.querySelectorAll('flowNodeRef')].map(r => r.textContent.trim());
+      laneNodes[lid].forEach(nid => nodeInLane[nid] = lid);
+    });
+
+    // --- ParticipantごとのFlowNodeを収集 ---
+    const partNodes = {}; // participantId -> [nodeId, ...]
+    participants.forEach(part => {
+      const pid = part.getAttribute('id');
+      const procRef = part.getAttribute('processRef');
+      const proc = processMap[procRef];
+      if (!proc) return;
+      const nodes = [...proc.querySelectorAll(
+        'startEvent,endEvent,task,userTask,serviceTask,exclusiveGateway,parallelGateway,inclusiveGateway'
+      )].map(n => n.getAttribute('id'));
+      partNodes[pid] = nodes;
+    });
+
+    // --- トポロジカルソートで要素の順序を決定 ---
+    function topoSort(nodeIds, flows) {
+      const inDeg = {};
+      const adj = {};
+      nodeIds.forEach(id => { inDeg[id] = 0; adj[id] = []; });
+      flows.forEach(f => {
+        const s = f.getAttribute('sourceRef');
+        const t = f.getAttribute('targetRef');
+        if (nodeIds.includes(s) && nodeIds.includes(t)) {
+          adj[s].push(t);
+          inDeg[t] = (inDeg[t] || 0) + 1;
+        }
+      });
+      const queue = nodeIds.filter(id => !inDeg[id]);
+      const result = [];
+      while (queue.length) {
+        const cur = queue.shift();
+        result.push(cur);
+        (adj[cur] || []).forEach(next => {
+          inDeg[next]--;
+          if (inDeg[next] === 0) queue.push(next);
+        });
+      }
+      // 未処理ノードを末尾に追加（循環参照対策）
+      nodeIds.forEach(id => { if (!result.includes(id)) result.push(id); });
+      return result;
+    }
+
+    // --- Bounds計算 ---
+    const bounds = {}; // id -> {x,y,w,h}
+
+    // 各Participantの処理
+    let partOffsetY = START_Y; // 横レイアウト: 次のParticipantのy
+    let partOffsetX = START_X; // 縦レイアウト: 次のParticipantのx
+
+    participants.forEach((part, pi) => {
+      const pid = part.getAttribute('id');
+      const procRef = part.getAttribute('processRef');
+      const proc = processMap[procRef];
+      if (!proc) return;
+
+      const lanes = [...proc.querySelectorAll('lane')];
+      const isExternal = lanes.length === 0;
+
+      // そのParticipantに属するFlowNodeリスト
+      const myNodeIds = partNodes[pid] || [];
+
+      // トポロジカルソート
+      const sorted = topoSort(myNodeIds, seqFlows);
+
+      if (isVertical) {
+        // ===== 縦レイアウト =====
+        const laneCount = Math.max(1, lanes.length);
+        const partW = isExternal ? LANE_W : LANE_W * laneCount;
+
+        // 並行ゲートウェイを検出して最大並行数を計算
+        let maxParallel = 1;
+        doc.querySelectorAll('parallelGateway').forEach(gw => {
+          const gwId = gw.getAttribute('id');
+          const outCount = seqFlows.filter(f => f.getAttribute('sourceRef') === gwId).length;
+          maxParallel = Math.max(maxParallel, outCount);
+        });
+
+        const partH = sorted.length * STEP_Y + 200;
+        const px = partOffsetX;
+        const py = START_Y;
+        bounds[pid] = { x: r10(px), y: r10(py), w: r10(partW), h: r10(partH) };
+
+        // レーンのBounds
+        lanes.forEach((lane, li) => {
+          const lid = lane.getAttribute('id');
+          bounds[lid] = {
+            x: r10(px + li * LANE_W),
+            y: r10(py),
+            w: r10(LANE_W),
+            h: r10(partH)
+          };
+        });
+
+        // FlowNodeのBounds（縦方向に配置）
+        const parallelGroups = {}; // gwId -> [nodeIds]
+        seqFlows.forEach(f => {
+          const src = f.getAttribute('sourceRef');
+          const srcEl = nodeMap[src];
+          if (srcEl && srcEl.localName.includes('parallel')) {
+            if (!parallelGroups[src]) parallelGroups[src] = [];
+            parallelGroups[src].push(f.getAttribute('targetRef'));
+          }
+        });
+
+        let curY = py + 80;
+        const placedY = {}; // nodeId -> y
+        sorted.forEach(nid => {
+          const node = nodeMap[nid];
+          if (!node) return;
+          const sz = elemSize(node.localName);
+
+          // レーン内のx座標を決定
+          const lid = nodeInLane[nid];
+          let laneIdx = 0;
+          if (lid) {
+            lanes.forEach((l, i) => { if (l.getAttribute('id') === lid) laneIdx = i; });
+          }
+          const cx = r10(px + laneIdx * LANE_W + LABEL_W + (LANE_W - LABEL_W - sz.w) / 2);
+          const cy = r10(curY);
+          bounds[nid] = { x: cx, y: cy, w: sz.w, h: sz.h };
+          placedY[nid] = cy;
+          curY += STEP_Y;
+        });
+
+        // 並行タスクをx方向にずらす
+        Object.entries(parallelGroups).forEach(([gwId, nodeIds]) => {
+          const count = nodeIds.length;
+          const gwB = bounds[gwId];
+          if (!gwB) return;
+          nodeIds.forEach((nid, idx) => {
+            const nb = bounds[nid];
+            if (!nb) return;
+            const offset = (idx - (count - 1) / 2) * 140;
+            bounds[nid] = { ...nb, x: r10(gwB.x + gwB.w / 2 - nb.w / 2 + offset) };
+          });
+        });
+
+        partOffsetX += partW + PART_GAP;
+
+      } else {
+        // ===== 横レイアウト =====
+        const laneCount = Math.max(1, lanes.length);
+        const partH = isExternal ? LANE_H : LANE_H * laneCount;
+
+        // 並行グループを検出
+        const parallelGroups = {};
+        seqFlows.forEach(f => {
+          const src = f.getAttribute('sourceRef');
+          const srcEl = nodeMap[src];
+          if (srcEl && srcEl.localName.includes('parallel')) {
+            if (!parallelGroups[src]) parallelGroups[src] = [];
+            parallelGroups[src].push(f.getAttribute('targetRef'));
+          }
+        });
+
+        // 最大並行数に基づいてパーティシパント高さを再計算
+        let maxParallel = 1;
+        Object.values(parallelGroups).forEach(grp => {
+          maxParallel = Math.max(maxParallel, grp.length);
+        });
+        const adjustedLaneH = Math.max(LANE_H, maxParallel * STEP_Y + 40);
+        const adjustedPartH = isExternal ? adjustedLaneH : adjustedLaneH * laneCount;
+
+        const px = START_X;
+        const py = partOffsetY;
+        bounds[pid] = { x: r10(px), y: r10(py), w: 900, h: r10(adjustedPartH) };
+
+        // レーンのBounds
+        lanes.forEach((lane, li) => {
+          const lid = lane.getAttribute('id');
+          bounds[lid] = {
+            x: r10(px + LABEL_W),
+            y: r10(py + li * adjustedLaneH),
+            w: r10(900 - LABEL_W),
+            h: r10(adjustedLaneH)
+          };
+        });
+
+        // FlowNodeのBounds（横方向に配置）
+        let curX = px + 100;
+        sorted.forEach(nid => {
+          const node = nodeMap[nid];
+          if (!node) return;
+          const sz = elemSize(node.localName);
+
+          // レーン内のy座標を決定
+          const lid = nodeInLane[nid];
+          let laneIdx = 0;
+          if (lid) {
+            lanes.forEach((l, i) => { if (l.getAttribute('id') === lid) laneIdx = i; });
+          }
+          const laneTopY = isExternal ? py : py + laneIdx * adjustedLaneH;
+          const cy = r10(laneTopY + adjustedLaneH / 2 - sz.h / 2);
+          const cx = r10(curX);
+          bounds[nid] = { x: cx, y: cy, w: sz.w, h: sz.h };
+          curX += STEP_X;
+        });
+
+        // 並行タスクをy方向にずらす
+        Object.entries(parallelGroups).forEach(([gwId, nodeIds]) => {
+          const count = nodeIds.length;
+          const gwB = bounds[gwId];
+          if (!gwB) return;
+          nodeIds.forEach((nid, idx) => {
+            const nb = bounds[nid];
+            if (!nb) return;
+            const offset = (idx - (count - 1) / 2) * STEP_Y;
+            bounds[nid] = { ...nb, y: r10(gwB.y + gwB.h / 2 - nb.h / 2 + offset) };
+          });
+        });
+
+        // Participant幅を実際の最大右端に合わせて拡張
+        let maxRight = 0;
+        myNodeIds.forEach(nid => {
+          const b = bounds[nid];
+          if (b) maxRight = Math.max(maxRight, b.x + b.w);
+        });
+        const newW = r10(maxRight + MARGIN);
+        bounds[pid].w = newW;
+        lanes.forEach(lane => {
+          const lid = lane.getAttribute('id');
+          if (bounds[lid]) bounds[lid].w = r10(newW - LABEL_W);
+        });
+
+        partOffsetY += adjustedPartH + PART_GAP;
+      }
+    });
+
+    // --- Waypoint計算 ---
+    const waypoints = {}; // flowId -> [{x,y}, ...]
+
+    function midX(b) { return r10(b.x + b.w / 2); }
+    function midY(b) { return r10(b.y + b.h / 2); }
+    function right(b) { return r10(b.x + b.w); }
+    function bottom(b) { return r10(b.y + b.h); }
+
+    // sequenceFlow waypoints
+    seqFlows.forEach(f => {
+      const fid = f.getAttribute('id');
+      const sb = bounds[f.getAttribute('sourceRef')];
+      const tb = bounds[f.getAttribute('targetRef')];
+      if (!sb || !tb) return;
+
+      if (isVertical) {
+        // 縦: 上→下
+        if (Math.abs(midX(sb) - midX(tb)) < 10) {
+          // 直線
+          waypoints[fid] = [{x: midX(sb), y: bottom(sb)}, {x: midX(tb), y: tb.y}];
+        } else {
+          // L字
+          const midYpt = r10((bottom(sb) + tb.y) / 2);
+          waypoints[fid] = [
+            {x: midX(sb), y: bottom(sb)},
+            {x: midX(sb), y: midYpt},
+            {x: midX(tb), y: midYpt},
+            {x: midX(tb), y: tb.y}
+          ];
+        }
+      } else {
+        // 横: 左→右
+        if (Math.abs(midY(sb) - midY(tb)) < 10) {
+          // 直線
+          waypoints[fid] = [{x: right(sb), y: midY(sb)}, {x: tb.x, y: midY(tb)}];
+        } else {
+          // L字
+          const midXpt = r10((right(sb) + tb.x) / 2);
+          waypoints[fid] = [
+            {x: right(sb), y: midY(sb)},
+            {x: midXpt,    y: midY(sb)},
+            {x: midXpt,    y: midY(tb)},
+            {x: tb.x,      y: midY(tb)}
+          ];
+        }
+      }
+    });
+
+    // messageFlow waypoints
+    msgFlows.forEach(f => {
+      const fid = f.getAttribute('id');
+      const sb = bounds[f.getAttribute('sourceRef')];
+      const tb = bounds[f.getAttribute('targetRef')];
+      if (!sb || !tb) return;
+
+      if (isVertical) {
+        // 縦: 右→左
+        waypoints[fid] = [
+          {x: right(sb), y: midY(sb)},
+          {x: r10((right(sb) + tb.x) / 2), y: midY(sb)},
+          {x: r10((right(sb) + tb.x) / 2), y: midY(tb)},
+          {x: tb.x, y: midY(tb)}
+        ];
+      } else {
+        // 横: 上→下（Participant境界を通過）
+        waypoints[fid] = [
+          {x: midX(sb), y: sb.y},
+          {x: midX(sb), y: r10(sb.y - 20)},
+          {x: midX(tb), y: r10(tb.y + tb.h + 20)},
+          {x: midX(tb), y: bottom(tb)}
+        ];
+      }
+    });
+
+    // --- XMLにBoundsとWaypointを書き込む ---
+    const bpmndiNS = 'http://www.omg.org/spec/BPMN/20100524/DI';
+    const dcNS     = 'http://www.omg.org/spec/DD/20100524/DC';
+    const diNS     = 'http://www.omg.org/spec/DD/20100524/DI';
+
+    // BPMNDiagramを取得または作成
+    let diagram = doc.querySelector('BPMNDiagram');
+    let plane   = doc.querySelector('BPMNPlane');
+
+    if (!diagram) {
+      diagram = doc.createElementNS(bpmndiNS, 'bpmndi:BPMNDiagram');
+      diagram.setAttribute('id', 'BPMNDiagram_1');
+      doc.documentElement.appendChild(diagram);
+    }
+    if (!plane) {
+      plane = doc.createElementNS(bpmndiNS, 'bpmndi:BPMNPlane');
+      // collaborationがあればそれを、なければprocessをbpmnElementに
+      const collab = doc.querySelector('collaboration');
+      const firstProc = doc.querySelector('process');
+      plane.setAttribute('bpmnElement', collab ? collab.getAttribute('id') : (firstProc ? firstProc.getAttribute('id') : ''));
+      diagram.appendChild(plane);
+    }
+
+    // 既存のShape/Edgeを全削除して再生成
+    [...plane.querySelectorAll('BPMNShape, BPMNEdge')].forEach(el => el.remove());
+
+    // BPMNShape生成
+    Object.entries(bounds).forEach(([id, b]) => {
+      const shape = doc.createElementNS(bpmndiNS, 'bpmndi:BPMNShape');
+      shape.setAttribute('bpmnElement', id);
+
+      // Participantかどうか
+      const el = doc.querySelector(`[id="${id}"]`);
+      if (el) {
+        const localName = el.localName;
+        if (localName === 'participant' || localName === 'lane') {
+          shape.setAttribute('isHorizontal', isVertical ? 'false' : 'true');
+        }
+      }
+
+      const boundsEl = doc.createElementNS(dcNS, 'dc:Bounds');
+      boundsEl.setAttribute('x', b.x);
+      boundsEl.setAttribute('y', b.y);
+      boundsEl.setAttribute('width', b.w);
+      boundsEl.setAttribute('height', b.h);
+      shape.appendChild(boundsEl);
+      plane.appendChild(shape);
+    });
+
+    // BPMNEdge生成（sequenceFlow）
+    seqFlows.forEach(f => {
+      const fid = f.getAttribute('id');
+      const wps = waypoints[fid];
+      if (!wps) return;
+      const edge = doc.createElementNS(bpmndiNS, 'bpmndi:BPMNEdge');
+      edge.setAttribute('bpmnElement', fid);
+      wps.forEach(wp => {
+        const pt = doc.createElementNS(diNS, 'di:waypoint');
+        pt.setAttribute('x', wp.x);
+        pt.setAttribute('y', wp.y);
+        edge.appendChild(pt);
+      });
+      plane.appendChild(edge);
+    });
+
+    // BPMNEdge生成（messageFlow）
+    msgFlows.forEach(f => {
+      const fid = f.getAttribute('id');
+      const wps = waypoints[fid];
+      if (!wps) return;
+      const edge = doc.createElementNS(bpmndiNS, 'bpmndi:BPMNEdge');
+      edge.setAttribute('bpmnElement', fid);
+      edge.setAttribute('messageVisibleKind', 'non_initiating');
+      wps.forEach(wp => {
+        const pt = doc.createElementNS(diNS, 'di:waypoint');
+        pt.setAttribute('x', wp.x);
+        pt.setAttribute('y', wp.y);
+        edge.appendChild(pt);
+      });
+      plane.appendChild(edge);
+    });
+
+    return new XMLSerializer().serializeToString(doc);
+
+  } catch(e) {
+    console.warn('autoLayout failed:', e);
+    return xml;
+  }
+}
+
+function fitView() {
+  try { viewer.get('canvas').zoom('fit-viewport', 'auto'); } catch(e) {}
+}
+
+function copyXml(e) {
+  const xml = document.getElementById('xml-output').textContent;
+  navigator.clipboard.writeText(xml).then(() => {
+    e.target.textContent = 'コピー済 ?';
+    setTimeout(() => e.target.textContent = 'コピー', 1500);
+  });
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('prompt').addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') generate();
+  });
+});
+</script>
+</body>
+</html>
