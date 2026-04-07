@@ -667,390 +667,647 @@ function autoLayout(xml) {
   try {
     const parser = new DOMParser();
     const doc = parser.parseFromString(xml, 'application/xml');
-    if (doc.querySelector('parsererror')) return xml;
+    if (doc.querySelector('parseerror')) return xml;
 
     const isVertical = layoutMode === 'vertical';
 
-    // --- サイズ定数 ---
-    const SIZE = {
-      task:    { w: 100, h: 80 },
-      gateway: { w: 50,  h: 50 },
-      event:   { w: 40,  h: 40 },
-    };
-    const STEP_X   = 160;  // 横方向の要素間隔（広げて重なり防止）
-    const STEP_Y   = 140;  // 縦方向の要素間隔（広げて重なり防止）
-    const MARGIN   = 100;  // プール外側余白
-    const START_X  = 80;
-    const START_Y  = 80;
-    const LABEL_W  = 30;   // レーンラベル幅
-    const PART_GAP = 30;   // プール間の隙間
-    const LANE_H   = 200;  // 横レイアウト時の1レーン高さ（広げる）
-    const LANE_W   = 200;  // 縦レイアウト時の1レーン幅
+    // ============================================================
+    // 定数
+    // ============================================================
+    const TASK_W    = 100;
+    const TASK_H    = 80;
+    const GW_W      = 50;
+    const GW_H      = 50;
+    const EVT_W     = 40;
+    const EVT_H     = 40;
+    const STEP_X    = 160;   // 横方向の要素間隔
+    const STEP_Y    = 150;   // 縦方向の要素間隔
+    const LANE_H    = 220;   // 横レイアウト時の1レーン高さ
+    const LANE_W    = 220;   // 縦レイアウト時の1レーン幅
+    const LABEL_W   = 30;    // レーンラベル幅
+    const PART_GAP  = 30;    // プール間の隙間
+    const START_X   = 80;
+    const START_Y   = 80;
+    const NODE_MARGIN_X = 80;  // プール右端の余白
 
-    const r10 = v => Math.round(v / 10) * 10;
+    const r = v => Math.round(v);
 
+    // 要素サイズ取得
     const elemSize = localName => {
-      if (localName.toLowerCase().includes('task')) return SIZE.task;
-      if (localName.toLowerCase().includes('gateway')) return SIZE.gateway;
-      return SIZE.event;
+      const ln = (localName || '').toLowerCase();
+      if (ln.includes('task'))    return { w: TASK_W, h: TASK_H };
+      if (ln.includes('gateway')) return { w: GW_W,   h: GW_H   };
+      return                               { w: EVT_W,  h: EVT_H  };
     };
 
-    // --- 要素収集 ---
+    // ============================================================
+    // 要素収集
+    // ============================================================
     const participants = [...doc.querySelectorAll('participant')];
     const processes    = [...doc.querySelectorAll('process')];
-    const allFlowNodes = [...doc.querySelectorAll(
+    const seqFlows     = [...doc.querySelectorAll('sequenceFlow')];
+    const msgFlows     = [...doc.querySelectorAll('messageFlow')];
+
+    const nodeMap = {};
+    [...doc.querySelectorAll(
       'startEvent,endEvent,task,userTask,serviceTask,' +
       'exclusiveGateway,parallelGateway,inclusiveGateway'
-    )];
-    const seqFlows = [...doc.querySelectorAll('sequenceFlow')];
-    const msgFlows = [...doc.querySelectorAll('messageFlow')];
-
-    const nodeMap    = {};
-    allFlowNodes.forEach(n => nodeMap[n.getAttribute('id')] = n);
+    )].forEach(n => nodeMap[n.getAttribute('id')] = n);
 
     const processMap = {};
     processes.forEach(p => processMap[p.getAttribute('id')] = p);
 
-    // --- レーンとFlowNode対応 ---
+    // レーン所属マップ: nodeId -> laneId
     const nodeInLane = {};
-    doc.querySelectorAll('lane').forEach(lane => {
-      const lid = lane.getAttribute('id');
-      [...lane.querySelectorAll('flowNodeRef')]
-        .forEach(r => nodeInLane[r.textContent.trim()] = lid);
+    // レーン順序マップ: laneId -> index
+    const laneIndex  = {};
+    doc.querySelectorAll('laneSet').forEach(ls => {
+      [...ls.querySelectorAll('lane')].forEach((lane, i) => {
+        const lid = lane.getAttribute('id');
+        laneIndex[lid] = i;
+        [...lane.querySelectorAll('flowNodeRef')]
+          .forEach(r => nodeInLane[r.textContent.trim()] = lid);
+      });
     });
 
-    // --- ParticipantごとのFlowNode収集 ---
-    const partNodes = {};
+    // Participant -> processRef -> nodeIds
+    const partNodeIds = {}; // participantId -> [nodeId]
     participants.forEach(part => {
-      const pid    = part.getAttribute('id');
-      const proc   = processMap[part.getAttribute('processRef')];
-      if (!proc) return;
-      partNodes[pid] = [...proc.querySelectorAll(
+      const pid  = part.getAttribute('id');
+      const proc = processMap[part.getAttribute('processRef')];
+      if (!proc) { partNodeIds[pid] = []; return; }
+      partNodeIds[pid] = [...proc.querySelectorAll(
         'startEvent,endEvent,task,userTask,serviceTask,' +
         'exclusiveGateway,parallelGateway,inclusiveGateway'
       )].map(n => n.getAttribute('id'));
     });
 
-    // --- トポロジカルソート（ループ対応・Participant内のフローのみ使用）---
+    // nodeId -> participantId
+    const nodeInPart = {};
+    Object.entries(partNodeIds).forEach(([pid, ids]) => {
+      ids.forEach(id => nodeInPart[id] = pid);
+    });
+
+    // ============================================================
+    // トポロジカルソート（Participant内のフローのみ・ループ対応）
+    // ============================================================
     function topoSort(nodeIds, flows) {
-      // そのParticipant内のフローのみ抽出
-      const nodeSet = new Set(nodeIds);
+      const nodeSet    = new Set(nodeIds);
       const localFlows = flows.filter(f =>
         nodeSet.has(f.getAttribute('sourceRef')) &&
         nodeSet.has(f.getAttribute('targetRef'))
       );
 
-      const inDeg = {};
-      const adj   = {};
-      nodeIds.forEach(id => { inDeg[id] = 0; adj[id] = []; });
+      // 後退辺（ループ辺）を検出して除外するためDFS
+      const adj = {};
+      nodeIds.forEach(id => adj[id] = []);
+      localFlows.forEach(f => {
+        adj[f.getAttribute('sourceRef')].push(f.getAttribute('targetRef'));
+      });
 
+      const visited  = new Set();
+      const onStack  = new Set();
+      const backEdge = new Set(); // "src->tgt" 形式
+
+      function dfs(v) {
+        visited.add(v);
+        onStack.add(v);
+        for (const w of (adj[v] || [])) {
+          if (!visited.has(w)) dfs(w);
+          else if (onStack.has(w)) backEdge.add(`${v}->${w}`);
+        }
+        onStack.delete(v);
+      }
+      nodeIds.forEach(id => { if (!visited.has(id)) dfs(id); });
+
+      // 後退辺を除いた隣接リストで再構築
+      const inDeg = {};
+      const adj2  = {};
+      nodeIds.forEach(id => { inDeg[id] = 0; adj2[id] = []; });
       localFlows.forEach(f => {
         const s = f.getAttribute('sourceRef');
         const t = f.getAttribute('targetRef');
-        // ループエッジ（既にtがsに到達可能）は無視してDAG化
-        adj[s].push(t);
-        inDeg[t]++;
+        if (!backEdge.has(`${s}->${t}`)) {
+          adj2[s].push(t);
+          inDeg[t]++;
+        }
       });
 
-      // ループ検出：inDeg > 0 のままのノードはループ辺を除去
       const queue  = nodeIds.filter(id => inDeg[id] === 0);
       const result = [];
-      const visited = new Set();
-
+      const done   = new Set();
       while (queue.length) {
         const cur = queue.shift();
-        if (visited.has(cur)) continue;
-        visited.add(cur);
+        if (done.has(cur)) continue;
+        done.add(cur);
         result.push(cur);
-        (adj[cur] || []).forEach(next => {
-          inDeg[next]--;
-          if (inDeg[next] === 0) queue.push(next);
-        });
+        for (const next of (adj2[cur] || [])) {
+          if (--inDeg[next] === 0) queue.push(next);
+        }
       }
-      // 未処理ノード（ループ内）を末尾に追加
-      nodeIds.forEach(id => { if (!visited.has(id)) result.push(id); });
+      nodeIds.forEach(id => { if (!done.has(id)) result.push(id); });
       return result;
     }
 
-    // --- 並行グループ検出（全体） ---
-    const parallelOutGroups = {}; // gwId -> [targetNodeId, ...]
-    const parallelJoinIds   = new Set(); // 合流ゲートウェイのID
+    // ============================================================
+    // 並行分岐グループ検出
+    // parallelGatewayから複数出力があるもの → 分岐GW
+    // parallelGatewayへ複数入力があるもの   → 合流GW
+    // ============================================================
+    const parallelSplit = {}; // gwId -> [targetNodeId]
+    const parallelJoin  = new Set();
+
+    const seqBySource = {};
+    const seqByTarget = {};
     seqFlows.forEach(f => {
-      const src   = f.getAttribute('sourceRef');
-      const srcEl = nodeMap[src];
-      if (srcEl && srcEl.localName.toLowerCase().includes('parallel')) {
-        const outCount = seqFlows.filter(
-          ff => ff.getAttribute('sourceRef') === src
-        ).length;
-        if (outCount > 1) {
-          if (!parallelOutGroups[src]) parallelOutGroups[src] = [];
-          parallelOutGroups[src].push(f.getAttribute('targetRef'));
-        } else {
-          parallelJoinIds.add(src); // 合流ゲートウェイ
-        }
-      }
+      const s = f.getAttribute('sourceRef');
+      const t = f.getAttribute('targetRef');
+      if (!seqBySource[s]) seqBySource[s] = [];
+      if (!seqByTarget[t]) seqByTarget[t] = [];
+      seqBySource[s].push(t);
+      seqByTarget[t].push(s);
     });
 
-    // --- Bounds計算 ---
-    const bounds = {};
-    let partOffsetY = START_Y;
-    let partOffsetX = START_X;
+    Object.keys(nodeMap).forEach(id => {
+      const el = nodeMap[id];
+      if (!el.localName.toLowerCase().includes('parallel')) return;
+      const outs = seqBySource[id] || [];
+      const ins  = seqByTarget[id] || [];
+      if (outs.length > 1) parallelSplit[id] = outs;
+      if (ins.length  > 1) parallelJoin.add(id);
+    });
+
+    // ============================================================
+    // Bounds計算
+    // ============================================================
+    const bounds = {}; // id -> {x, y, w, h}
+
+    let partOffsetY = START_Y; // 横レイアウト：Participantをy方向に積む
+    let partOffsetX = START_X; // 縦レイアウト：Participantをx方向に並べる
 
     participants.forEach(part => {
       const pid    = part.getAttribute('id');
       const proc   = processMap[part.getAttribute('processRef')];
       if (!proc) return;
 
-      const lanes      = [...proc.querySelectorAll('lane')];
-      const isExternal = lanes.length === 0;
-      const myNodeIds  = partNodes[pid] || [];
-      const sorted     = topoSort(myNodeIds, seqFlows);
+      const lanes     = [...proc.querySelectorAll('lane')];
+      const hasLanes  = lanes.length > 0;
+      const myNodeIds = partNodeIds[pid] || [];
+      const sorted    = topoSort(myNodeIds, seqFlows);
 
-      if (isVertical) {
-        // ===== 縦レイアウト =====
-        const laneCount = Math.max(1, lanes.length);
-        const partW     = isExternal ? LANE_W : LANE_W * laneCount;
-        const partH     = r10(sorted.length * STEP_Y + 200);
-        const px = partOffsetX;
-        const py = START_Y;
+      // 並行分岐グループのうち、このParticipantに属するもの
+      const myParallelSplits = Object.entries(parallelSplit)
+        .filter(([gwId]) => myNodeIds.includes(gwId));
 
-        bounds[pid] = { x: r10(px), y: r10(py), w: r10(partW), h: partH };
+      if (!isVertical) {
+        // ============================================================
+        // 横レイアウト
+        // ============================================================
+        const laneCount      = Math.max(1, lanes.length);
 
-        // レーンBounds（縦レイアウト：レーンをx方向に並べる）
+        // 並行分岐の最大数でレーン高さを調整
+        let maxParallel = 1;
+        myParallelSplits.forEach(([, targets]) => {
+          maxParallel = Math.max(maxParallel, targets.length);
+        });
+        const effLaneH  = Math.max(LANE_H, maxParallel * STEP_Y + 60);
+        const partH     = effLaneH * laneCount;
+        const px        = START_X;
+        const py        = partOffsetY;
+
+        // Participant仮Bounds（幅は後で確定）
+        bounds[pid] = { x: px, y: py, w: 900, h: partH };
+
+        // Lane Bounds
         lanes.forEach((lane, li) => {
           const lid = lane.getAttribute('id');
           bounds[lid] = {
-            x: r10(px + li * LANE_W),
-            y: r10(py),
-            w: r10(LANE_W),
-            h: partH
+            x: px + LABEL_W,
+            y: py + li * effLaneH,
+            w: 900 - LABEL_W,   // 仮幅
+            h: effLaneH
           };
         });
 
-        // FlowNodeBounds
-        let curY = py + 100;
+        // ---- FlowNodeのX座標をtopoSort順に割り当て ----
+        // 並行分岐グループに属するノードは同じX列に配置
+        const nodeX = {}; // nodeId -> x（左辺）
+        let curX = px + LABEL_W + 60;
+
         sorted.forEach(nid => {
-          const node = nodeMap[nid];
-          if (!node) return;
-          const sz     = elemSize(node.localName);
-          const lid    = nodeInLane[nid];
-          let laneIdx  = 0;
-          if (lid) {
-            lanes.forEach((l, i) => {
-              if (l.getAttribute('id') === lid) laneIdx = i;
-            });
-          }
-          const laneLeft = px + laneIdx * LANE_W + LABEL_W;
-          const cx = r10(laneLeft + (LANE_W - LABEL_W - sz.w) / 2);
-          bounds[nid] = { x: cx, y: r10(curY), w: sz.w, h: sz.h };
-          curY += STEP_Y;
+          // 既にX割り当て済みならスキップ
+          if (nodeX[nid] !== undefined) return;
+          nodeX[nid] = curX;
+          curX += STEP_X;
         });
 
-        // 並行タスクをx方向にオフセット
-        Object.entries(parallelOutGroups).forEach(([gwId, nodeIds]) => {
-          const gwB = bounds[gwId];
-          if (!gwB) return;
-          const count = nodeIds.length;
-          nodeIds.forEach((nid, idx) => {
-            const nb = bounds[nid];
-            if (!nb) return;
-            const offset = (idx - (count - 1) / 2) * (LANE_W - LABEL_W);
-            bounds[nid] = { ...nb, x: r10(gwB.x + gwB.w / 2 - nb.w / 2 + offset) };
+        // 並行分岐グループのX座標を分岐GWに合わせて揃える
+        myParallelSplits.forEach(([gwId, targets]) => {
+          const gwX = nodeX[gwId];
+          if (gwX === undefined) return;
+          // 分岐直後のノードは全て gwX + STEP_X に配置
+          targets.forEach(tid => {
+            nodeX[tid] = gwX + STEP_X;
+          });
+          // 分岐後のノードのX座標を再割り当て（分岐グループより後ろ）
+          // 合流GWを探して、そこ以降を詰める
+          const joinGwId = (seqByTarget[targets[0]] || [])
+            .flatMap(id => seqByTarget[id] || [])
+            .find(id => parallelJoin.has(id));
+          // 合流GW以降のノードのX再計算
+          let afterX = nodeX[gwId] + STEP_X * 2;
+          sorted.forEach(nid => {
+            if (targets.includes(nid)) return;
+            if (nid === gwId) return;
+            const prevX = nodeX[nid];
+            if (prevX !== undefined && prevX <= nodeX[gwId] + STEP_X) return;
+            nodeX[nid] = afterX;
+            afterX += STEP_X;
           });
         });
 
-        partOffsetX += partW + PART_GAP;
-
-      } else {
-        // ===== 横レイアウト =====
-        const laneCount = Math.max(1, lanes.length);
-
-        // 並行グループの最大数でレーン高さを調整
-        let maxParallel = 1;
-        Object.entries(parallelOutGroups).forEach(([gwId, nodeIds]) => {
-          if (myNodeIds.includes(gwId)) {
-            maxParallel = Math.max(maxParallel, nodeIds.length);
-          }
-        });
-        const adjustedLaneH = Math.max(LANE_H, maxParallel * STEP_Y + 60);
-        const adjustedPartH = isExternal
-          ? adjustedLaneH
-          : adjustedLaneH * laneCount;
-
-        const px = START_X;
-        const py = partOffsetY;
-
-        // Participant幅は後で確定するので仮置き
-        bounds[pid] = { x: r10(px), y: r10(py), w: 900, h: r10(adjustedPartH) };
-
-        // レーンBounds（横レイアウト：レーンをy方向に並べる）
-        lanes.forEach((lane, li) => {
-          const lid = lane.getAttribute('id');
-          bounds[lid] = {
-            x: r10(px + LABEL_W),          // ← 修正：全レーン同じx（ラベル分だけ右）
-            y: r10(py + li * adjustedLaneH),
-            w: r10(900 - LABEL_W),          // 仮幅（後で更新）
-            h: r10(adjustedLaneH)
-          };
-        });
-
-        // FlowNodeBounds（x方向に配置）
-        let curX = px + LABEL_W + 80;
+        // FlowNodeのBounds確定
         sorted.forEach(nid => {
           const node = nodeMap[nid];
           if (!node) return;
           const sz    = elemSize(node.localName);
           const lid   = nodeInLane[nid];
-          let laneIdx = 0;
-          if (lid) {
-            lanes.forEach((l, i) => {
-              if (l.getAttribute('id') === lid) laneIdx = i;
-            });
-          }
-          const laneTopY = isExternal ? py : py + laneIdx * adjustedLaneH;
-          const cy = r10(laneTopY + adjustedLaneH / 2 - sz.h / 2);
-          bounds[nid] = { x: r10(curX), y: cy, w: sz.w, h: sz.h };
-          curX += STEP_X;
+          const li    = (lid !== undefined && laneIndex[lid] !== undefined)
+                        ? laneIndex[lid] : 0;
+          const laneTopY = hasLanes ? py + li * effLaneH : py;
+          const cx = nodeX[nid] !== undefined ? nodeX[nid] : (px + LABEL_W + 60);
+          const cy = r(laneTopY + effLaneH / 2 - sz.h / 2);
+          bounds[nid] = { x: r(cx), y: cy, w: sz.w, h: sz.h };
         });
 
-        // 並行タスクをy方向にオフセット（ゲートウェイのy基準）
-        Object.entries(parallelOutGroups).forEach(([gwId, nodeIds]) => {
-          if (!myNodeIds.includes(gwId)) return;
+        // 並行分岐グループのY座標オフセット（ゲートウェイ中心基準）
+        myParallelSplits.forEach(([gwId, targets]) => {
           const gwB   = bounds[gwId];
           if (!gwB) return;
-          const count = nodeIds.length;
-          nodeIds.forEach((nid, idx) => {
-            const nb = bounds[nid];
+          const gwCY  = gwB.y + gwB.h / 2;
+          const count = targets.length;
+          targets.forEach((tid, idx) => {
+            const nb = bounds[tid];
             if (!nb) return;
             const offset = (idx - (count - 1) / 2) * STEP_Y;
-            // ゲートウェイの中心Y を基準にオフセット ← 修正
-            bounds[nid] = {
-              ...nb,
-              y: r10(gwB.y + gwB.h / 2 - nb.h / 2 + offset)
-            };
+            bounds[tid] = { ...nb, y: r(gwCY - nb.h / 2 + offset) };
           });
         });
 
-        // Participant幅を実際の右端に合わせて確定
-        let maxRight = 0;
+        // Participant幅を右端ノードに合わせて確定
+        let maxRight = px + 300;
         myNodeIds.forEach(nid => {
           const b = bounds[nid];
           if (b) maxRight = Math.max(maxRight, b.x + b.w);
         });
-        const newW = r10(maxRight + MARGIN);
-        bounds[pid].w = newW;
-
-        // レーン幅も同期して更新 ← 修正：xも再計算
+        const finalW = r(maxRight + NODE_MARGIN_X);
+        bounds[pid].w = finalW;
         lanes.forEach(lane => {
           const lid = lane.getAttribute('id');
-          if (bounds[lid]) {
-            bounds[lid].w = r10(newW - LABEL_W);
-          }
+          if (bounds[lid]) bounds[lid].w = finalW - LABEL_W;
         });
 
-        partOffsetY += adjustedPartH + PART_GAP;
+        partOffsetY += partH + PART_GAP;
+
+      } else {
+        // ============================================================
+        // 縦レイアウト
+        // ============================================================
+        const laneCount = Math.max(1, lanes.length);
+        let maxParallel = 1;
+        myParallelSplits.forEach(([, targets]) => {
+          maxParallel = Math.max(maxParallel, targets.length);
+        });
+        const effLaneW = Math.max(LANE_W, maxParallel * STEP_X + 60);
+        const partW    = effLaneW * laneCount;
+        const px       = partOffsetX;
+        const py       = START_Y;
+
+        const partH_est = sorted.length * STEP_Y + 200;
+        bounds[pid] = { x: px, y: py, w: partW, h: partH_est };
+
+        lanes.forEach((lane, li) => {
+          const lid = lane.getAttribute('id');
+          bounds[lid] = {
+            x: px + li * effLaneW,
+            y: py,
+            w: effLaneW,
+            h: partH_est
+          };
+        });
+
+        const nodeY = {};
+        let curY = py + 100;
+        sorted.forEach(nid => {
+          if (nodeY[nid] !== undefined) return;
+          nodeY[nid] = curY;
+          curY += STEP_Y;
+        });
+
+        sorted.forEach(nid => {
+          const node = nodeMap[nid];
+          if (!node) return;
+          const sz   = elemSize(node.localName);
+          const lid  = nodeInLane[nid];
+          const li   = (lid !== undefined && laneIndex[lid] !== undefined)
+                       ? laneIndex[lid] : 0;
+          const laneLeftX = hasLanes ? px + li * effLaneW + LABEL_W : px;
+          const laneInnerW = hasLanes ? effLaneW - LABEL_W : partW;
+          const cx = r(laneLeftX + laneInnerW / 2 - sz.w / 2);
+          bounds[nid] = { x: cx, y: r(nodeY[nid]), w: sz.w, h: sz.h };
+        });
+
+        myParallelSplits.forEach(([gwId, targets]) => {
+          const gwB  = bounds[gwId];
+          if (!gwB) return;
+          const gwCX = gwB.x + gwB.w / 2;
+          const count = targets.length;
+          targets.forEach((tid, idx) => {
+            const nb = bounds[tid];
+            if (!nb) return;
+            const offset = (idx - (count - 1) / 2) * STEP_X;
+            bounds[tid] = { ...nb, x: r(gwCX - nb.w / 2 + offset) };
+          });
+        });
+
+        // 高さ確定
+        let maxBottom = py + 200;
+        myNodeIds.forEach(nid => {
+          const b = bounds[nid];
+          if (b) maxBottom = Math.max(maxBottom, b.y + b.h);
+        });
+        const finalH = r(maxBottom + NODE_MARGIN_X);
+        bounds[pid].h = finalH;
+        lanes.forEach(lane => {
+          const lid = lane.getAttribute('id');
+          if (bounds[lid]) bounds[lid].h = finalH;
+        });
+
+        partOffsetX += partW + PART_GAP;
       }
     });
 
-    // --- Waypoint計算 ---
+    // ============================================================
+    // 全Participantの幅（横レイアウト）または高さ（縦レイアウト）を統一
+    // ============================================================
+    if (!isVertical) {
+      let maxW = 0;
+      participants.forEach(part => {
+        const b = bounds[part.getAttribute('id')];
+        if (b) maxW = Math.max(maxW, b.w);
+      });
+      participants.forEach(part => {
+        const pid = part.getAttribute('id');
+        const b   = bounds[pid];
+        if (!b) return;
+        b.w = maxW;
+        const proc = processMap[part.getAttribute('processRef')];
+        if (!proc) return;
+        [...proc.querySelectorAll('lane')].forEach(lane => {
+          const lb = bounds[lane.getAttribute('id')];
+          if (lb) lb.w = maxW - LABEL_W;
+        });
+      });
+    } else {
+      let maxH = 0;
+      participants.forEach(part => {
+        const b = bounds[part.getAttribute('id')];
+        if (b) maxH = Math.max(maxH, b.h);
+      });
+      participants.forEach(part => {
+        const pid = part.getAttribute('id');
+        const b   = bounds[pid];
+        if (!b) return;
+        b.h = maxH;
+        const proc = processMap[part.getAttribute('processRef')];
+        if (!proc) return;
+        [...proc.querySelectorAll('lane')].forEach(lane => {
+          const lb = bounds[lane.getAttribute('id')];
+          if (lb) lb.h = maxH;
+        });
+      });
+    }
+
+    // ============================================================
+    // Waypoint計算ヘルパー
+    // ============================================================
+    const midX   = b => r(b.x + b.w / 2);
+    const midY   = b => r(b.y + b.h / 2);
+    const right  = b => r(b.x + b.w);
+    const bottom = b => r(b.y + b.h);
+
+    // ============================================================
+    // SequenceFlow Waypoints
+    // ============================================================
     const waypoints = {};
 
-    const midX   = b => r10(b.x + b.w / 2);
-    const midY   = b => r10(b.y + b.h / 2);
-    const right  = b => r10(b.x + b.w);
-    const bottom = b => r10(b.y + b.h);
-
-    // SequenceFlow
     seqFlows.forEach(f => {
       const fid = f.getAttribute('id');
       const sb  = bounds[f.getAttribute('sourceRef')];
       const tb  = bounds[f.getAttribute('targetRef')];
       if (!sb || !tb) return;
 
-      if (isVertical) {
-        if (Math.abs(midX(sb) - midX(tb)) < 5) {
-          // 直線（同一x）
-          waypoints[fid] = [
-            { x: midX(sb), y: bottom(sb) },
-            { x: midX(tb), y: tb.y }
-          ];
+      if (!isVertical) {
+        // 横レイアウト：右辺→左辺
+        const sx = right(sb), sy = midY(sb);
+        const tx = tb.x,      ty = midY(tb);
+
+        if (Math.abs(sy - ty) <= 2) {
+          // 直線
+          waypoints[fid] = [{ x: sx, y: sy }, { x: tx, y: ty }];
         } else {
-          // L字（x方向にずれている場合）
-          const midYpt = r10((bottom(sb) + tb.y) / 2);
+          // L字（中間X = source右辺とtarget左辺の中点）
+          const mx = r((sx + tx) / 2);
           waypoints[fid] = [
-            { x: midX(sb), y: bottom(sb) },
-            { x: midX(sb), y: midYpt },
-            { x: midX(tb), y: midYpt },
-            { x: midX(tb), y: tb.y }
+            { x: sx, y: sy },
+            { x: mx, y: sy },
+            { x: mx, y: ty },
+            { x: tx, y: ty }
           ];
         }
       } else {
-        if (Math.abs(midY(sb) - midY(tb)) < 5) {
-          // 直線（同一y）
-          waypoints[fid] = [
-            { x: right(sb), y: midY(sb) },
-            { x: tb.x,      y: midY(tb) }
-          ];
+        // 縦レイアウト：下辺→上辺
+        const sx = midX(sb), sy = bottom(sb);
+        const tx = midX(tb), ty = tb.y;
+
+        if (Math.abs(sx - tx) <= 2) {
+          waypoints[fid] = [{ x: sx, y: sy }, { x: tx, y: ty }];
         } else {
-          // L字（y方向にずれている場合）
-          const midXpt = r10((right(sb) + tb.x) / 2);
+          const my = r((sy + ty) / 2);
           waypoints[fid] = [
-            { x: right(sb), y: midY(sb) },
-            { x: midXpt,    y: midY(sb) },
-            { x: midXpt,    y: midY(tb) },
-            { x: tb.x,      y: midY(tb) }
+            { x: sx, y: sy },
+            { x: sx, y: my },
+            { x: tx, y: my },
+            { x: tx, y: ty }
           ];
         }
       }
     });
 
-    // MessageFlow（修正：下辺→上辺 の方向で接続）
-    // プール間の中間Y（または中間X）を経由点として使用
+    // ============================================================
+    // MessageFlow Waypoints
+    // ============================================================
+
+    // Participantの境界情報を取得するヘルパー
+    function getPartBounds(nodeId) {
+      const pid = nodeInPart[nodeId];
+      return pid ? bounds[pid] : null;
+    }
+
+    // 2つのParticipant間の境界中間座標を計算
+    function getBoundaryMid(srcPartB, tgtPartB) {
+      if (!isVertical) {
+        // 横レイアウト：Y方向の境界
+        const srcBottom = srcPartB.y + srcPartB.h;
+        const tgtTop    = tgtPartB.y;
+        if (srcBottom <= tgtTop) {
+          // srcが上、tgtが下
+          return { axis: 'y', val: r((srcBottom + tgtTop) / 2) };
+        } else {
+          // srcが下、tgtが上
+          const tgtBottom = tgtPartB.y + tgtPartB.h;
+          const srcTop    = srcPartB.y;
+          return { axis: 'y', val: r((tgtBottom + srcTop) / 2) };
+        }
+      } else {
+        // 縦レイアウト：X方向の境界
+        const srcRight = srcPartB.x + srcPartB.w;
+        const tgtLeft  = tgtPartB.x;
+        if (srcRight <= tgtLeft) {
+          return { axis: 'x', val: r((srcRight + tgtLeft) / 2) };
+        } else {
+          const tgtRight = tgtPartB.x + tgtPartB.w;
+          const srcLeft  = srcPartB.x;
+          return { axis: 'x', val: r((tgtRight + srcLeft) / 2) };
+        }
+      }
+    }
+
+    // レーン間の境界中間Y（同一Participant内）
+    function getLaneBoundaryY(srcNodeId, tgtNodeId) {
+      const srcLid = nodeInLane[srcNodeId];
+      const tgtLid = nodeInLane[tgtNodeId];
+      if (!srcLid || !tgtLid) return null;
+      const srcLB = bounds[srcLid];
+      const tgtLB = bounds[tgtLid];
+      if (!srcLB || !tgtLB) return null;
+      const srcBottom = srcLB.y + srcLB.h;
+      const tgtTop    = tgtLB.y;
+      if (srcBottom <= tgtTop) return r((srcBottom + tgtTop) / 2);
+      const tgtBottom = tgtLB.y + tgtLB.h;
+      const srcTop    = srcLB.y;
+      return r((tgtBottom + srcTop) / 2);
+    }
+
     msgFlows.forEach(f => {
-      const fid = f.getAttribute('id');
-      const sb  = bounds[f.getAttribute('sourceRef')];
-      const tb  = bounds[f.getAttribute('targetRef')];
+      const fid    = f.getAttribute('id');
+      const srcId  = f.getAttribute('sourceRef');
+      const tgtId  = f.getAttribute('targetRef');
+      const sb     = bounds[srcId];
+      const tb     = bounds[tgtId];
       if (!sb || !tb) return;
 
-      if (isVertical) {
-        // 縦レイアウト：右辺→左辺（Participantがx方向に並ぶ）
-        const midXpt = r10((right(sb) + tb.x) / 2);
-        waypoints[fid] = [
-          { x: right(sb), y: midY(sb) },
-          { x: midXpt,    y: midY(sb) },
-          { x: midXpt,    y: midY(tb) },
-          { x: tb.x,      y: midY(tb) }
-        ];
-      } else {
-        // 横レイアウト：下辺→上辺（Participantがy方向に並ぶ）← 修正
-        // sourceが上のParticipant → 下辺から出発
-        // sourceが下のParticipant → 上辺から出発
-        const srcIsAbove = sb.y < tb.y;
-        const midYpt = r10(
-          srcIsAbove
-            ? (bottom(sb) + tb.y) / 2       // 上→下：中間点
-            : (sb.y + bottom(tb)) / 2        // 下→上：中間点
-        );
+      const srcPartB = getPartBounds(srcId);
+      const tgtPartB = getPartBounds(tgtId);
+      const isSamePart = srcPartB && tgtPartB && srcPartB === tgtPartB;
 
-        if (srcIsAbove) {
-          waypoints[fid] = [
-            { x: midX(sb), y: bottom(sb) },  // source下辺
-            { x: midX(sb), y: midYpt },       // 中間
-            { x: midX(tb), y: midYpt },       // 中間
-            { x: midX(tb), y: tb.y }          // target上辺
-          ];
+      if (isSamePart) {
+        // ---- 同一Participant内のレーン間MessageFlow ----
+        // （例：Lane_1のT8 → Lane_2のT9）
+        const boundaryY = getLaneBoundaryY(srcId, tgtId);
+        if (!isVertical) {
+          if (boundaryY !== null) {
+            const sx = midX(sb), tx = midX(tb);
+            const srcIsAbove = sb.y < tb.y;
+            if (srcIsAbove) {
+              // source下辺 → レーン境界 → target上辺（直角L字）
+              waypoints[fid] = [
+                { x: sx, y: bottom(sb) },
+                { x: sx, y: boundaryY },
+                { x: tx, y: boundaryY },
+                { x: tx, y: tb.y }
+              ];
+            } else {
+              waypoints[fid] = [
+                { x: sx, y: sb.y },
+                { x: sx, y: boundaryY },
+                { x: tx, y: boundaryY },
+                { x: tx, y: bottom(tb) }
+              ];
+            }
+          } else {
+            // フォールバック：直線
+            waypoints[fid] = [
+              { x: midX(sb), y: bottom(sb) },
+              { x: midX(tb), y: tb.y }
+            ];
+          }
         } else {
+          // 縦レイアウト同一Participant内：右辺→左辺
+          const mx = r((right(sb) + tb.x) / 2);
           waypoints[fid] = [
-            { x: midX(sb), y: sb.y },         // source上辺
-            { x: midX(sb), y: midYpt },        // 中間
-            { x: midX(tb), y: midYpt },        // 中間
-            { x: midX(tb), y: bottom(tb) }     // target下辺
+            { x: right(sb), y: midY(sb) },
+            { x: mx,        y: midY(sb) },
+            { x: mx,        y: midY(tb) },
+            { x: tb.x,      y: midY(tb) }
           ];
+        }
+      } else {
+        // ---- 異なるParticipant間のMessageFlow ----
+        if (!srcPartB || !tgtPartB) return;
+        const boundary = getBoundaryMid(srcPartB, tgtPartB);
+
+        if (!isVertical) {
+          // 横レイアウト：プール境界のY（midYpt）を経由
+          const midYpt = boundary.val;
+          const sx = midX(sb), tx = midX(tb);
+          const srcIsAbove = srcPartB.y < tgtPartB.y;
+
+          if (srcIsAbove) {
+            // source（上プール）の下辺 → midYpt → target（下プール）の上辺
+            waypoints[fid] = [
+              { x: sx, y: bottom(sb) },  // source下辺中央
+              { x: sx, y: midYpt },       // プール境界（X固定）
+              { x: tx, y: midYpt },       // プール境界（Y固定、X移動）
+              { x: tx, y: tb.y }          // target上辺中央
+            ];
+          } else {
+            // source（下プール）の上辺 → midYpt → target（上プール）の下辺
+            waypoints[fid] = [
+              { x: sx, y: sb.y },         // source上辺中央
+              { x: sx, y: midYpt },
+              { x: tx, y: midYpt },
+              { x: tx, y: bottom(tb) }    // target下辺中央
+            ];
+          }
+        } else {
+          // 縦レイアウト：プール境界のX（midXpt）を経由
+          const midXpt = boundary.val;
+          const sy = midY(sb), ty = midY(tb);
+          const srcIsLeft = srcPartB.x < tgtPartB.x;
+
+          if (srcIsLeft) {
+            waypoints[fid] = [
+              { x: right(sb), y: sy },
+              { x: midXpt,    y: sy },
+              { x: midXpt,    y: ty },
+              { x: tb.x,      y: ty }
+            ];
+          } else {
+            waypoints[fid] = [
+              { x: sb.x,   y: sy },
+              { x: midXpt, y: sy },
+              { x: midXpt, y: ty },
+              { x: right(tb), y: ty }
+            ];
+          }
         }
       }
     });
 
-    // --- XMLにBoundsとWaypointを書き込む ---
+    // ============================================================
+    // XMLへの書き込み
+    // ============================================================
     const bpmndiNS = 'http://www.omg.org/spec/BPMN/20100524/DI';
     const dcNS     = 'http://www.omg.org/spec/DD/20100524/DC';
     const diNS     = 'http://www.omg.org/spec/DD/20100524/DI';
@@ -1067,22 +1324,20 @@ function autoLayout(xml) {
       plane = doc.createElementNS(bpmndiNS, 'bpmndi:BPMNPlane');
       const collab    = doc.querySelector('collaboration');
       const firstProc = doc.querySelector('process');
-      plane.setAttribute(
-        'bpmnElement',
-        collab ? collab.getAttribute('id') : (firstProc ? firstProc.getAttribute('id') : '')
-      );
+      plane.setAttribute('bpmnElement',
+        collab    ? collab.getAttribute('id')    :
+        firstProc ? firstProc.getAttribute('id') : '');
       diagram.appendChild(plane);
     }
 
     // 既存Shape/Edgeを削除
     [...plane.querySelectorAll('BPMNShape, BPMNEdge')].forEach(el => el.remove());
 
-    // BPMNShape生成
-    // 順序：Participant → Lane → FlowNode（重なり防止のため親から先に追加）
+    // ---- BPMNShape生成（Participant → Lane → FlowNode の順） ----
     const shapeOrder = [
       ...participants.map(p => p.getAttribute('id')),
       ...([...doc.querySelectorAll('lane')].map(l => l.getAttribute('id'))),
-      ...allFlowNodes.map(n => n.getAttribute('id'))
+      ...Object.keys(nodeMap)
     ];
 
     shapeOrder.forEach(id => {
@@ -1097,7 +1352,6 @@ function autoLayout(xml) {
         if (ln === 'participant' || ln === 'lane') {
           shape.setAttribute('isHorizontal', isVertical ? 'false' : 'true');
         }
-        // ExclusiveGatewayにisMarkerVisibleを付与
         if (ln === 'exclusiveGateway') {
           shape.setAttribute('isMarkerVisible', 'true');
         }
@@ -1112,7 +1366,7 @@ function autoLayout(xml) {
       plane.appendChild(shape);
     });
 
-    // BPMNEdge生成（SequenceFlow）
+    // ---- BPMNEdge生成（SequenceFlow） ----
     seqFlows.forEach(f => {
       const fid = f.getAttribute('id');
       const wps = waypoints[fid];
@@ -1128,7 +1382,7 @@ function autoLayout(xml) {
       plane.appendChild(edge);
     });
 
-    // BPMNEdge生成（MessageFlow）
+    // ---- BPMNEdge生成（MessageFlow） ----
     msgFlows.forEach(f => {
       const fid = f.getAttribute('id');
       const wps = waypoints[fid];
