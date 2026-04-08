@@ -698,45 +698,57 @@ function convertToHorizontal(xml) {
 
   const shapes = doc.querySelectorAll('BPMNShape');
 
-  // ① Participant の元の座標・サイズを収集
-  const participantBounds = new Map();
+  // ① Participantの元座標を収集（Y座標でソート）
+  const participantShapes = [];
   shapes.forEach(shape => {
     const bpmnElement = shape.getAttribute('bpmnElement') || '';
     const elem = doc.querySelector(`[id="${bpmnElement}"]`);
     if (!elem || elem.localName !== 'participant') return;
     const bounds = shape.querySelector('Bounds');
     if (!bounds) return;
-    participantBounds.set(bpmnElement, {
-      x: parseFloat(bounds.getAttribute('x')),
-      y: parseFloat(bounds.getAttribute('y')),
-      w: parseFloat(bounds.getAttribute('width')),
-      h: parseFloat(bounds.getAttribute('height')),
+    participantShapes.push({
+      shape,
+      elem,
+      id: bpmnElement,
+      origX: parseFloat(bounds.getAttribute('x')),
+      origY: parseFloat(bounds.getAttribute('y')),
+      origW: parseFloat(bounds.getAttribute('width')),
+      origH: parseFloat(bounds.getAttribute('height')),
     });
   });
 
-  // ② Participant を縦並び（Y方向）に再配置
-  //    横レイアウト：width=プロセス幅, height=レーン高さ で縦に積む
+  // Y座標でソート（上から順）
+  participantShapes.sort((a, b) => a.origY - b.origY);
+
+  // ② Participantを縦に積み直す
   let currentY = 0;
   const participantNewBounds = new Map();
-
-  // 元のX座標でソート（上から順に処理）
-  const sortedParticipants = [...participantBounds.entries()]
-    .sort(([, a], [, b]) => a.y - b.y);
-
-  sortedParticipants.forEach(([id, b]) => {
-    // 縦横を入れ替え：元のheight→width、元のwidth→height
-    const newW = b.h;
-    const newH = b.w;
-    participantNewBounds.set(id, {
+  participantShapes.forEach(p => {
+    const newW = p.origW; // widthはそのまま
+    const newH = p.origH; // heightはそのまま
+    participantNewBounds.set(p.id, {
       x: 0,
       y: currentY,
       w: newW,
       h: newH,
     });
-    currentY += newH + 70; // Participant間のマージン
+    currentY += newH + 70;
   });
 
-  // ③ 全BPMNShapeを処理
+  // ③ ParticipantのprocessRefからlaneSetを取得するヘルパー
+  function getParticipantIdForLane(laneId) {
+    // laneの親processを探す
+    const lane = doc.querySelector(`[id="${laneId}"]`);
+    if (!lane) return null;
+    const process = lane.closest('process') || lane.parentElement?.closest('[id]');
+    if (!process) return null;
+    const processId = process.getAttribute('id');
+    // そのprocessRefを持つparticipantを探す
+    const participant = doc.querySelector(`[processRef="${processId}"]`);
+    return participant ? participant.getAttribute('id') : null;
+  }
+
+  // ④ 全BPMNShapeを処理
   shapes.forEach(shape => {
     const bpmnElement = shape.getAttribute('bpmnElement') || '';
     const elem = doc.querySelector(`[id="${bpmnElement}"]`);
@@ -745,9 +757,13 @@ function convertToHorizontal(xml) {
     if (!bounds) return;
 
     const localName = elem.localName;
+    const x = parseFloat(bounds.getAttribute('x'));
+    const y = parseFloat(bounds.getAttribute('y'));
+    const w = parseFloat(bounds.getAttribute('width'));
+    const h = parseFloat(bounds.getAttribute('height'));
 
     if (localName === 'participant') {
-      // Participant：再計算した座標を使用
+      // Participant：縦積み座標を適用
       const nb = participantNewBounds.get(bpmnElement);
       bounds.setAttribute('x', nb.x);
       bounds.setAttribute('y', nb.y);
@@ -756,39 +772,57 @@ function convertToHorizontal(xml) {
       shape.setAttribute('isHorizontal', 'true');
 
     } else if (localName === 'lane') {
-      // Lane：縦横入れ替え
-      const x = parseFloat(bounds.getAttribute('x'));
-      const y = parseFloat(bounds.getAttribute('y'));
-      const w = parseFloat(bounds.getAttribute('width'));
-      const h = parseFloat(bounds.getAttribute('height'));
-      bounds.setAttribute('x', y);
-      bounds.setAttribute('y', x);
-      bounds.setAttribute('width', h);
-      bounds.setAttribute('height', w);
+      // Lane：Participantのy座標を基準に補正
+      const participantId = getParticipantIdForLane(bpmnElement);
+      const nb = participantId ? participantNewBounds.get(participantId) : null;
+      const offsetY = nb ? nb.y : 0;
+
+      // LaneはParticipant内のY相対座標を維持しつつ絶対座標に変換
+      bounds.setAttribute('x', x);
+      bounds.setAttribute('y', y + offsetY);
+      bounds.setAttribute('width', w);
+      bounds.setAttribute('height', h);
       shape.setAttribute('isHorizontal', 'true');
 
     } else {
-      // その他の要素（Task, Gateway, Event等）：縦横入れ替え
-      const x = parseFloat(bounds.getAttribute('x'));
-      const y = parseFloat(bounds.getAttribute('y'));
-      const w = parseFloat(bounds.getAttribute('width'));
-      const h = parseFloat(bounds.getAttribute('height'));
-      bounds.setAttribute('x', y);
-      bounds.setAttribute('y', x);
-      bounds.setAttribute('width', h);
-      bounds.setAttribute('height', w);
+      // Task / Gateway / Event：Y座標にParticipantのオフセットを加算
+      // 所属するParticipantを特定
+      let offsetY = 0;
+      participantShapes.forEach(p => {
+        const nb = participantNewBounds.get(p.id);
+        if (!nb) return;
+        // 元のParticipantのY範囲内にある要素か判定
+        if (y >= p.origY && y <= p.origY + p.origH) {
+          offsetY = nb.y - p.origY;
+        }
+      });
+
+      bounds.setAttribute('x', x);
+      bounds.setAttribute('y', y + offsetY);
+      bounds.setAttribute('width', w);
+      bounds.setAttribute('height', h);
     }
   });
 
-  // ④ BPMNEdge のwaypointも縦横入れ替え
+  // ⑤ BPMNEdgeのwaypointもY座標を補正
   const edges = doc.querySelectorAll('BPMNEdge');
   edges.forEach(edge => {
     const waypoints = edge.querySelectorAll('waypoint');
     waypoints.forEach(wp => {
       const x = parseFloat(wp.getAttribute('x'));
       const y = parseFloat(wp.getAttribute('y'));
-      wp.setAttribute('x', y);
-      wp.setAttribute('y', x);
+
+      let offsetY = 0;
+      participantShapes.forEach(p => {
+        const nb = participantNewBounds.get(p.id);
+        if (!nb) return;
+        if (y >= p.origY && y <= p.origY + p.origH) {
+          offsetY = nb.y - p.origY;
+        }
+      });
+
+      wp.setAttribute('x', x);
+      wp.setAttribute('y', y + offsetY);
     });
   });
 
