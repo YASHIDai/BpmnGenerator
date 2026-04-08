@@ -175,6 +175,10 @@
   ::-webkit-scrollbar { width: 4px; }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 </style>
+<!-- bundle.js より前に読み込む -->
+<script src="https://unpkg.com/bpmn-moddle@9.1.2/dist/bpmn-moddle.development.js"></script>
+<script src="https://unpkg.com/bpmn-io-moddle@1.0.1/dist/bpmn-io-moddle.development.js"></script>
+<script src="bundle.js"></script>
 <!-- bpmn-js + bpmn-auto-layout バンドル -->
 <script src="bundle.js"></script>
 <link rel="stylesheet" href="https://unpkg.com/bpmn-js@17.11.1/dist/assets/bpmn-js.css">
