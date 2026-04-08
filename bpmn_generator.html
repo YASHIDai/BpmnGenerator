@@ -1030,6 +1030,20 @@ function fixCrossLaneXPositions(xml) {
       laneNodes.set(laneId, ordered);
     });
 
+    // ④-a MessageFlowで繋がれている接続点のX座標マップを収集
+    //   キー: このプロセス内のノードID
+    //   値:   そのノードにMessageFlowで接続している相手ノードのX中央座標
+    const msgFlowSourceXMap = new Map(); // nodeId(このプロセス内) → 相手ノードのcx
+    doc.querySelectorAll('messageFlow').forEach(mf => {
+      const src = mf.getAttribute('sourceRef');
+      const tgt = mf.getAttribute('targetRef');
+      // tgt がこのプロセス内のノードである場合
+      if (nodeIds.has(tgt)) {
+        const srcB = getBounds(src);
+        if (srcB) msgFlowSourceXMap.set(tgt, srcB.x + srcB.w / 2);
+      }
+    });
+
     // Lane内ノードのX座標を振り直す
     laneNodes.forEach((nodeList, laneId) => {
       const laneShape = doc.querySelector(`BPMNShape[bpmnElement="${laneId}"]`);
@@ -1039,7 +1053,31 @@ function fixCrossLaneXPositions(xml) {
       const laneY = parseFloat(lb.getAttribute('y'));
       const laneH = parseFloat(lb.getAttribute('height'));
 
+      // ★ 問題2修正: SequenceFlowで先行ノードがある場合はそのX右端+MARGINから開始
+      //   先行ノードが同プロセスの別Laneにある場合もある（Lane間フロー）
+      //   先行ノードがない（Lane内の入次数0ノード）はMessageFlow接続元のXを参照
       let currentX = laneX + START_X;
+
+      // このLaneへの入次数0ノードを見つけ、MessageFlow接続元のXで開始位置を決める
+      const laneInDegree = new Map();
+      nodeList.forEach(id => laneInDegree.set(id, 0));
+      processFlows.forEach(f => {
+        if (laneInDegree.has(f.targetRef) && nodeList.includes(f.sourceRef)) {
+          laneInDegree.set(f.targetRef, (laneInDegree.get(f.targetRef) || 0) + 1);
+        }
+      });
+      const laneRoots = nodeList.filter(id => (laneInDegree.get(id) || 0) === 0);
+
+      if (laneRoots.length > 0) {
+        // MessageFlow で接続元があればそのX座標中央を基準にする
+        const msgX = msgFlowSourceXMap.get(laneRoots[0]);
+        if (msgX !== undefined) {
+          const b = getBounds(laneRoots[0]);
+          const w = b ? b.w : 100;
+          // 接続元のX中央に合わせてノードを配置
+          currentX = Math.max(laneX + START_X, msgX - w / 2);
+        }
+      }
 
       nodeList.forEach(nodeId => {
         const b = getBounds(nodeId);
@@ -1051,12 +1089,26 @@ function fixCrossLaneXPositions(xml) {
       });
     });
 
-    // ⑤ Lane外ノード（外部プロセス等）はSequenceFlowを辿ってX補正
-    // トポロジカル順にsource右端+MARGIN > target左端 なら右にずらす
-    topoOrder.forEach(nodeId => {
-      if ([...laneNodes.values()].some(list => list.includes(nodeId))) return;
-      // Lane外ノードはそのまま（外部プロセスは別途処理）
-    });
+    // ⑤ Lane外ノード（スイムレーンなしプロセス）のX座標をトポロジカル順に補正
+    // SequenceFlowを辿って source右端+MARGIN > target左端 になるよう右にずらす
+    const hasLanes = laneNodes.size > 0;
+    if (!hasLanes) {
+      topoOrder.forEach(nodeId => {
+        const b = getBounds(nodeId);
+        if (!b) return;
+        // このノードへ向かう全SequenceFlowのsourceの右端を収集
+        processFlows.forEach(f => {
+          if (f.targetRef !== nodeId) return;
+          const sb = getBounds(f.sourceRef);
+          if (!sb) return;
+          const minX = sb.x + sb.w + MARGIN;
+          if (b.x < minX) {
+            setBounds(nodeId, minX, null);
+            b.x = minX; // 次のループで参照されるようローカル更新
+          }
+        });
+      });
+    }
   });
 
   // ⑥ Participant・Lane幅を最大X座標に合わせて拡張
@@ -1099,25 +1151,67 @@ function fixCrossLaneXPositions(xml) {
   // ⑦ 全Edgeのwaypoint再計算
   const shapeBounds = collectShapeBounds(doc);
 
+  // ノードID → Participant Shape のマップを構築
+  function getParticipantOfNode(nodeId) {
+    // Lane経由
+    const lane = getLaneOfNode(doc, nodeId);
+    if (lane) {
+      const pid = getLaneParticipantId(doc, lane.getAttribute('id'));
+      return pid;
+    }
+    // Lane なし: process の直接の子ノード → そのprocessRef を持つ participant を探す
+    for (const participant of doc.querySelectorAll('[processRef]')) {
+      const processId = participant.getAttribute('processRef');
+      const process = doc.querySelector(`[id="${processId}"]`);
+      if (!process) continue;
+      const FLOW_TAGS = ['startEvent','endEvent','task','userTask','serviceTask',
+        'scriptTask','manualTask','sendTask','receiveTask',
+        'exclusiveGateway','parallelGateway','inclusiveGateway',
+        'intermediateThrowEvent','intermediateCatchEvent','subProcess'];
+      for (const tag of FLOW_TAGS) {
+        for (const el of process.querySelectorAll(tag)) {
+          if (el.getAttribute('id') === nodeId) return participant.getAttribute('id');
+        }
+      }
+    }
+    return null;
+  }
+
   doc.querySelectorAll('BPMNEdge').forEach(edge => {
     const eid = edge.getAttribute('bpmnElement');
 
     const seqFlow = doc.querySelector(`sequenceFlow[id="${eid}"]`);
     if (seqFlow) {
-      const src = shapeBounds.get(seqFlow.getAttribute('sourceRef'));
-      const tgt = shapeBounds.get(seqFlow.getAttribute('targetRef'));
+      const srcId = seqFlow.getAttribute('sourceRef');
+      const tgtId = seqFlow.getAttribute('targetRef');
+      const src = shapeBounds.get(srcId);
+      const tgt = shapeBounds.get(tgtId);
       if (src && tgt) {
         [...edge.querySelectorAll('waypoint')].forEach(wp => wp.remove());
 
-        // ★ 同一Lane内なら直線、異なるLane間ならL字
-        const srcLane = getLaneOfNode(doc, seqFlow.getAttribute('sourceRef'));
-        const tgtLane = getLaneOfNode(doc, seqFlow.getAttribute('targetRef'));
+        // 同一Lane内かつY座標がほぼ同じ → 直線
+        // それ以外（異なるLane、Laneなしプロセス含む）→ L字
+        const srcLane = getLaneOfNode(doc, srcId);
+        const tgtLane = getLaneOfNode(doc, tgtId);
         const isSameLane = srcLane && tgtLane &&
           srcLane.getAttribute('id') === tgtLane.getAttribute('id');
+        // Laneなしプロセス内の同一Participantフローも直線で繋ぐ
+        const srcParticipant = getParticipantOfNode(srcId);
+        const tgtParticipant = getParticipantOfNode(tgtId);
+        const isSameParticipantNoLane = !srcLane && !tgtLane &&
+          srcParticipant && tgtParticipant &&
+          srcParticipant === tgtParticipant;
 
-        const points = isSameLane
-          ? calcStraightWaypoints(src, tgt)   // 直線
-          : calcLWaypoints(src, tgt);          // L字
+        // Y差が小さい場合のみ直線、Y方向移動がある場合は必ずL字
+        const srcB = shapeBounds.get(srcId);
+        const tgtB = shapeBounds.get(tgtId);
+        const srcCy = srcB.y + srcB.h / 2;
+        const tgtCy = tgtB.y + tgtB.h / 2;
+        const isNearlyHorizontal = Math.abs(srcCy - tgtCy) < 5;
+
+        const points = (isSameLane || isSameParticipantNoLane) && isNearlyHorizontal
+          ? calcStraightWaypoints(src, tgt)
+          : calcLWaypoints(src, tgt);
 
         points.forEach(p => {
           const wp = doc.createElementNS(diNs, 'di:waypoint');
