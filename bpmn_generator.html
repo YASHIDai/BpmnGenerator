@@ -175,10 +175,23 @@
   ::-webkit-scrollbar { width: 4px; }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 </style>
+<!-- importmap-->
+<script type="importmap">
+{
+  "imports": {
+    "bpmn-moddle": "https://unpkg.com/bpmn-moddle@10.0.0/dist/index.esm.js",
+    "min-dash": "https://unpkg.com/min-dash@5.0.0/dist/index.esm.js",
+    "moddle": "https://unpkg.com/moddle@8.0.0/dist/index.esm.js",
+    "moddle-xml": "https://unpkg.com/moddle-xml@12.0.0/dist/index.esm.js",
+    "saxen": "https://unpkg.com/saxen@11.0.2/index.js"
+  }
+}
+</script>
+
 <!-- bpmn-js -->
-<script src="https://unpkg.com/bpmn-js@17.11.1/dist/bpmn-navigated-viewer.production.min.js"></script>
 <link rel="stylesheet" href="https://unpkg.com/bpmn-js@17.11.1/dist/assets/bpmn-js.css">
 <link rel="stylesheet" href="https://unpkg.com/bpmn-js@17.11.1/dist/assets/bpmn-font/css/bpmn.css">
+<script src="https://unpkg.com/bpmn-js@17.11.1/dist/bpmn-navigated-viewer.production.min.js"></script>
 </head>
 <body>
 
