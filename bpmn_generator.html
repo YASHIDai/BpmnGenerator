@@ -661,7 +661,7 @@ async function generate() {
 // bpmn-auto-layoutを使った自動レイアウト
 async function applyAutoLayout(xml) {
   try {
-    const module = await import('https://unpkg.com/bpmn-auto-layout@0.1.0/dist/index.esm.js');
+    const module = await import('https://unpkg.com/bpmn-auto-layout@0.3.0/dist/index.esm.js');
     const AutoLayout = module.default || module.BpmnAutoLayout || Object.values(module)[0];
     if (!AutoLayout || typeof AutoLayout !== 'function') {
       throw new Error('AutoLayout クラスが見つかりません');
