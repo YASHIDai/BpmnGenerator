@@ -180,6 +180,7 @@
 {
   "imports": {
     "bpmn-moddle": "./bpmn-moddle-wrapper.js",
+    "graph-by-ivan-tulaev": "https://unpkg.com/graph-by-ivan-tulaev/dist/index.js",
     "min-dash": "https://unpkg.com/min-dash@5.0.0/dist/index.esm.js",
     "moddle": "https://unpkg.com/moddle@8.0.0/dist/index.esm.js",
     "moddle-xml": "https://unpkg.com/moddle-xml@12.0.0/dist/index.esm.js",
@@ -675,13 +676,10 @@ async function generate() {
 // bpmn-auto-layoutを使った自動レイアウト
 async function applyAutoLayout(xml) {
   try {
-    const { layoutProcess } = await import(
-      'https://unpkg.com/bpmn-auto-layout@1.3.0/dist/index.js'
+    const module = await import(
+      'https://unpkg.com/yet-another-bpmn-auto-layout@2.0.0/dist/index.js'
     );
-    if (!layoutProcess || typeof layoutProcess !== 'function') {
-      throw new Error('layoutProcess が読み込めませんでした');
-    }
-    return await layoutProcess(xml);
+    return await module.layoutProcess(xml);
   } catch(e) {
     console.warn('autoLayout failed:', e);
     return xml;
