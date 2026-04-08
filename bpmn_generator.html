@@ -679,13 +679,14 @@ async function applyAutoLayout(xml) {
     const module = await import(
       'https://unpkg.com/yet-another-bpmn-auto-layout@2.0.0/dist/index.js'
     );
-    let result = await module.layoutProcess(xml);
+    const enriched = enrichSequenceFlows(xml);
+    let result = await module.layoutProcess(enriched);
 
-    // 縦レイアウトか横レイアウトかを自動判定して変換
     result = normalizeToHorizontal(result);
     result = addSequenceFlowEdges(result);
     result = fixLaneLayout(result);
     result = fixMessageFlowEdges(result);
+    result = fixCrossLaneXPositions(result); // ★ 追加
     return result;
   } catch(e) {
     console.warn('autoLayout failed:', e);
@@ -854,6 +855,206 @@ function getLaneParticipantId(doc, laneId) {
   return null;
 }
 
+// ============================================
+// レーンをまたぐ要素のX座標を補正する
+// ============================================
+function fixCrossLaneXPositions(xml) {
+  const parser = new DOMParser();
+  const serializer = new XMLSerializer();
+  const doc = parser.parseFromString(xml, 'application/xml');
+
+  // ① 全SequenceFlowを収集
+  const flows = new Map(); // id → { sourceRef, targetRef }
+  doc.querySelectorAll('sequenceFlow').forEach(flow => {
+    flows.set(flow.getAttribute('id'), {
+      sourceRef: flow.getAttribute('sourceRef'),
+      targetRef: flow.getAttribute('targetRef'),
+    });
+  });
+
+  // ② shapeBoundsを収集
+  const shapeBounds = collectShapeBounds(doc);
+
+  // ③ 各要素がどのLaneに属するか収集
+  const nodeToLane = new Map(); // nodeId → laneId
+  doc.querySelectorAll('lane').forEach(lane => {
+    const laneId = lane.getAttribute('id');
+    lane.querySelectorAll('flowNodeRef').forEach(ref => {
+      nodeToLane.set(ref.textContent.trim(), laneId);
+    });
+  });
+
+  // ④ Laneのboundsを収集
+  const laneBounds = new Map(); // laneId → { x, y, w, h }
+  doc.querySelectorAll('BPMNShape').forEach(shape => {
+    const id = shape.getAttribute('bpmnElement');
+    const elem = doc.querySelector(`lane[id="${id}"]`);
+    if (!elem) return;
+    const b = shape.querySelector('Bounds');
+    if (!b) return;
+    laneBounds.set(id, {
+      x: parseFloat(b.getAttribute('x')),
+      y: parseFloat(b.getAttribute('y')),
+      w: parseFloat(b.getAttribute('width')),
+      h: parseFloat(b.getAttribute('height')),
+    });
+  });
+
+  // ⑤ トポロジカル順序でX座標を補正
+  //    SequenceFlowを辿り、source.x + source.w + margin > target.x なら
+  //    target以降を右にずらす
+  const MARGIN = 40; // 要素間の最小間隔
+  const MAX_ITER = 50; // 最大反復回数（循環フロー対策）
+
+  for (let iter = 0; iter < MAX_ITER; iter++) {
+    let changed = false;
+
+    flows.forEach(({ sourceRef, targetRef }) => {
+      const source = shapeBounds.get(sourceRef);
+      const target = shapeBounds.get(targetRef);
+      if (!source || !target) return;
+
+      // sourceの右端 + MARGIN がtargetの左端より右にある場合
+      const requiredX = source.x + source.w + MARGIN;
+      if (requiredX > target.x) {
+        const delta = requiredX - target.x;
+
+        // targetと同じLane内で、targetのX座標以上の要素を全て右にずらす
+        const targetLaneId = nodeToLane.get(targetRef);
+        const targetLane = targetLaneId
+          ? doc.querySelector(`lane[id="${targetLaneId}"]`)
+          : null;
+
+        // ずらす対象ノードを収集（同一Lane内でtarget.x以上）
+        const nodesToShift = new Set();
+
+        if (targetLane) {
+          targetLane.querySelectorAll('flowNodeRef').forEach(ref => {
+            const nodeId = ref.textContent.trim();
+            const nb = shapeBounds.get(nodeId);
+            if (nb && nb.x >= target.x - 1) {
+              nodesToShift.add(nodeId);
+            }
+          });
+        } else {
+          // Laneなし（外部プロセス）の場合はtarget単体のみ
+          nodesToShift.add(targetRef);
+        }
+
+        // 実際にBoundsを更新
+        nodesToShift.forEach(nodeId => {
+          const nb = shapeBounds.get(nodeId);
+          if (!nb) return;
+          const shape = doc.querySelector(`BPMNShape[bpmnElement="${nodeId}"]`);
+          if (!shape) return;
+          const bounds = shape.querySelector('Bounds');
+          if (!bounds) return;
+
+          nb.x += delta;
+          bounds.setAttribute('x', nb.x);
+          changed = true;
+        });
+      }
+    });
+
+    if (!changed) break;
+  }
+
+  // ⑥ Participantの幅を要素の最大X座標に合わせて拡張
+  doc.querySelectorAll('[processRef]').forEach(participant => {
+    const participantId = participant.getAttribute('id');
+    const processRef    = participant.getAttribute('processRef');
+    const process       = doc.querySelector(`[id="${processRef}"]`);
+    if (!process) return;
+
+    const participantShape = doc.querySelector(
+      `BPMNShape[bpmnElement="${participantId}"]`
+    );
+    if (!participantShape) return;
+    const pBounds = participantShape.querySelector('Bounds');
+
+    // このParticipant内の全要素の最大X座標を取得
+    let maxX = 0;
+    const allNodeIds = new Set();
+
+    // Lane内の要素
+    process.querySelectorAll('flowNodeRef').forEach(ref => {
+      allNodeIds.add(ref.textContent.trim());
+    });
+    // Lane外の要素（外部プロセス等）
+    ['startEvent','endEvent','userTask','exclusiveGateway',
+     'parallelGateway','serviceTask','scriptTask'].forEach(tag => {
+      process.querySelectorAll(tag).forEach(elem => {
+        allNodeIds.add(elem.getAttribute('id'));
+      });
+    });
+
+    allNodeIds.forEach(nodeId => {
+      const nb = shapeBounds.get(nodeId);
+      if (nb) maxX = Math.max(maxX, nb.x + nb.w);
+    });
+
+    if (maxX > 0) {
+      const newWidth = maxX + 80; // 右マージン
+      pBounds.setAttribute('width', newWidth);
+
+      // Lane幅も同期
+      const lanes = process.querySelectorAll('lane');
+      lanes.forEach(lane => {
+        const laneId = lane.getAttribute('id');
+        const laneShape = doc.querySelector(`BPMNShape[bpmnElement="${laneId}"]`);
+        if (!laneShape) return;
+        const lb = laneShape.querySelector('Bounds');
+        const pX = parseFloat(pBounds.getAttribute('x'));
+        lb.setAttribute('width', newWidth - 30);
+      });
+    }
+  });
+
+  // ⑦ waypoint再計算（L字）
+  const updatedBounds = collectShapeBounds(doc);
+  const diNs = 'http://www.omg.org/spec/DD/20100524/DI';
+
+  doc.querySelectorAll('BPMNEdge').forEach(edge => {
+    const bpmnElementId = edge.getAttribute('bpmnElement');
+
+    // SequenceFlow
+    const seqFlow = doc.querySelector(`sequenceFlow[id="${bpmnElementId}"]`);
+    if (seqFlow) {
+      const source = updatedBounds.get(seqFlow.getAttribute('sourceRef'));
+      const target = updatedBounds.get(seqFlow.getAttribute('targetRef'));
+      if (source && target) {
+        [...edge.querySelectorAll('waypoint')].forEach(wp => wp.remove());
+        calcLWaypoints(source, target).forEach(p => {
+          const wp = doc.createElementNS(diNs, 'di:waypoint');
+          wp.setAttribute('x', p.x);
+          wp.setAttribute('y', p.y);
+          edge.appendChild(wp);
+        });
+      }
+      return;
+    }
+
+    // MessageFlow
+    const msgFlow = doc.querySelector(`messageFlow[id="${bpmnElementId}"]`);
+    if (msgFlow) {
+      const source = updatedBounds.get(msgFlow.getAttribute('sourceRef'));
+      const target = updatedBounds.get(msgFlow.getAttribute('targetRef'));
+      if (source && target) {
+        [...edge.querySelectorAll('waypoint')].forEach(wp => wp.remove());
+        calcMessageFlowWaypoints(source, target).forEach(p => {
+          const wp = doc.createElementNS(diNs, 'di:waypoint');
+          wp.setAttribute('x', p.x);
+          wp.setAttribute('y', p.y);
+          edge.appendChild(wp);
+        });
+      }
+    }
+  });
+
+  return serializer.serializeToString(doc);
+}
+  
 // ============================================
 // L字waypoint計算（SequenceFlow用・横方向）
 // ============================================
