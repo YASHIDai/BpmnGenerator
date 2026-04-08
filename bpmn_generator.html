@@ -1123,43 +1123,60 @@ function fixCrossLaneXPositions(xml) {
   return serializer.serializeToString(doc);
 }
 
+const MARGIN = 40;
+  
 // ============================================
-// 直線waypoint（同一Lane内用）
+// 直線waypoint（同一Lane内・左→右）
 // ============================================
 function calcStraightWaypoints(source, target) {
-  const sx = source.x + source.w;        // ソース右端
-  const sy = source.y + source.h / 2;    // ソース中央Y
-  const tx = target.x;                   // ターゲット左端
-  const ty = target.y + target.h / 2;   // ターゲット中央Y
+  const sx = source.x + source.w;      // ソース右端
+  const sy = source.y + source.h / 2;  // ソース中央Y
+  const tx = target.x;                 // ターゲット左端
+  const ty = target.y + target.h / 2;  // ターゲット中央Y
+
+  // ★ ソースがターゲットより右にある場合（逆向き）は
+  //    ソース左端 → ターゲット右端 で接続
+  if (sx > tx + target.w) {
+    return [
+      { x: source.x,          y: sy },
+      { x: target.x + target.w, y: ty },
+    ];
+  }
+
+  // 通常（左→右）
   return [
     { x: sx, y: sy },
     { x: tx, y: ty },
   ];
 }
 
-// ノードが属するlane要素を返す
-function getLaneOfNode(doc, nodeId) {
-  const lanes = doc.querySelectorAll('lane');
-  for (const lane of lanes) {
-    const refs = [...lane.querySelectorAll('flowNodeRef')]
-      .map(r => r.textContent.trim());
-    if (refs.includes(nodeId)) return lane;
-  }
-  return null;
-}
-  
 // ============================================
-// L字waypoint計算（SequenceFlow用・横方向）
+// L字waypoint（異なるLane間）
 // ============================================
 function calcLWaypoints(source, target) {
-  const sx = source.x + source.w;
-  const sy = source.y + source.h / 2;
-  const tx = target.x;
-  const ty = target.y + target.h / 2;
+  const sx = source.x + source.w;      // ソース右端
+  const sy = source.y + source.h / 2;  // ソース中央Y
+  const tx = target.x;                 // ターゲット左端
+  const ty = target.y + target.h / 2;  // ターゲット中央Y
 
+  // ★ Y座標が同じなら直線
   if (Math.abs(sy - ty) < 5) {
     return [{ x: sx, y: sy }, { x: tx, y: ty }];
   }
+
+  // ★ ソースがターゲットより右にある場合（逆向き・折り返し）
+  if (sx > tx) {
+    // ソース左端から出てターゲット右端へ
+    const exitX = Math.min(source.x, target.x + target.w) - MARGIN;
+    return [
+      { x: source.x, y: sy },
+      { x: exitX,    y: sy },
+      { x: exitX,    y: ty },
+      { x: target.x + target.w, y: ty },
+    ];
+  }
+
+  // 通常（左→右・L字）
   const midX = Math.round((sx + tx) / 2);
   return [
     { x: sx,   y: sy },
