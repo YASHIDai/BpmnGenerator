@@ -675,14 +675,13 @@ async function generate() {
 // bpmn-auto-layoutを使った自動レイアウト
 async function applyAutoLayout(xml) {
   try {
-    const { default: AutoLayout } = await import(
+    const { layoutProcess } = await import(
       'https://unpkg.com/bpmn-auto-layout@1.3.0/dist/index.js'
     );
-    if (!AutoLayout || typeof AutoLayout !== 'function') {
-      throw new Error('BpmnAutoLayout が読み込めませんでした');
+    if (!layoutProcess || typeof layoutProcess !== 'function') {
+      throw new Error('layoutProcess が読み込めませんでした');
     }
-    const layouter = new AutoLayout();
-    return await layouter.layoutProcess(xml);
+    return await layoutProcess(xml);
   } catch(e) {
     console.warn('autoLayout failed:', e);
     return xml;
