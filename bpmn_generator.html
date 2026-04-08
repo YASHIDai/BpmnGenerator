@@ -197,7 +197,7 @@
 <body>
 
 <header>
-  <div class="logo">?</div>
+  <div class="logo">⬡</div>
   <div>
     <h1>BPMN フロー生成ツール</h1>
     <div class="sub">日本語 → BPMN 2.0 XML → リアルタイム描画</div>
@@ -212,20 +212,20 @@
       <textarea id="prompt" rows="7" placeholder="例：顧客から注文を受け付け、在庫を確認する。在庫がある場合は出荷処理を行い、ない場合は調達部門へ発注する…"></textarea>
       <div class="label" style="margin-top:10px;">サンプル</div>
       <div class="examples">
-        <button class="example-btn" onclick="loadExample(0)">  届出手続フロー（転入届）</button>
-        <button class="example-btn" onclick="loadExample(1)">  証明書発行請求フロー（住民票の写し）</button>
-        <button class="example-btn" onclick="loadExample(2)">  許認可申請フロー（飲食店営業許可）</button>
+        <button class="example-btn" onclick="loadExample(0)">📨 届出手続フロー（転入届）</button>
+        <button class="example-btn" onclick="loadExample(1)">📄 証明書発行請求フロー（住民票の写し）</button>
+        <button class="example-btn" onclick="loadExample(2)">✍️ 許認可申請フロー（飲食店営業許可）</button>
       </div>
     </div>
     <div class="panel-section">
       <div class="label">レイアウト方向</div>
       <div class="layout-toggle">
-        <button class="layout-btn active" id="btn-horizontal" onclick="setLayout('horizontal')">? 横（左→右）</button>
-        <button class="layout-btn" id="btn-vertical" onclick="setLayout('vertical')">? 縦（上→下）</button>
+        <button class="layout-btn active" id="btn-horizontal" onclick="setLayout('horizontal')">⬌ 横（左→右）</button>
+        <button class="layout-btn" id="btn-vertical" onclick="setLayout('vertical')">⬍ 縦（上→下）</button>
       </div>
     </div>
     <div class="panel-section">
-      <button class="generate-btn" id="gen-btn" onclick="generate()">? BPMN を生成する</button>
+      <button class="generate-btn" id="gen-btn" onclick="generate()">✦ BPMN を生成する</button>
       <div class="error-bar" id="error-bar"></div>
     </div>
     <div class="xml-panel">
