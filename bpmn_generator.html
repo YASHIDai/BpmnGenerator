@@ -976,6 +976,53 @@ function calcMessageFlowWaypoints(source, target) {
   ];
 }
 
+function fixMessageFlowEdges(xml) {
+  const parser = new DOMParser();
+  const serializer = new XMLSerializer();
+  const doc = parser.parseFromString(xml, 'application/xml');
+
+  const shapeBounds = new Map();
+  doc.querySelectorAll('BPMNShape').forEach(shape => {
+    const id = shape.getAttribute('bpmnElement');
+    const bounds = shape.querySelector('Bounds');
+    if (!id || !bounds) return;
+    shapeBounds.set(id, {
+      x: parseFloat(bounds.getAttribute('x')),
+      y: parseFloat(bounds.getAttribute('y')),
+      w: parseFloat(bounds.getAttribute('width')),
+      h: parseFloat(bounds.getAttribute('height')),
+    });
+  });
+
+  const diNs = 'http://www.omg.org/spec/DD/20100524/DI';
+
+  doc.querySelectorAll('BPMNEdge').forEach(edge => {
+    const bpmnElementId = edge.getAttribute('bpmnElement');
+    const flow = doc.querySelector(`messageFlow[id="${bpmnElementId}"]`);
+    if (!flow) return;
+
+    const sourceId = flow.getAttribute('sourceRef');
+    const targetId = flow.getAttribute('targetRef');
+    const source = shapeBounds.get(sourceId);
+    const target = shapeBounds.get(targetId);
+    if (!source || !target) return;
+
+    // 既存waypointを全削除
+    [...edge.querySelectorAll('waypoint')].forEach(wp => wp.remove());
+
+    // ✅ L字waypoint（MessageFlow用）
+    const points = calcMessageFlowWaypoints(source, target);
+    points.forEach(p => {
+      const wp = doc.createElementNS(diNs, 'di:waypoint');
+      wp.setAttribute('x', p.x);
+      wp.setAttribute('y', p.y);
+      edge.appendChild(wp);
+    });
+  });
+
+  return serializer.serializeToString(doc);
+}
+  
 function fitView() {
   try { viewer.get('canvas').zoom('fit-viewport', 'auto'); } catch(e) {}
 }
