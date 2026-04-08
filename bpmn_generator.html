@@ -787,14 +787,34 @@ function fixLaneLayout(xml) {
   const serializer = new XMLSerializer();
   const doc = parser.parseFromString(xml, 'application/xml');
 
-  // Participantごとにlaneを収集
+  // ========================================
+  // ① shapeBoundsを最初に定義（★ここが修正点）
+  // ========================================
+  function collectShapeBounds() {
+    const map = new Map();
+    doc.querySelectorAll('BPMNShape').forEach(shape => {
+      const id = shape.getAttribute('bpmnElement');
+      const bounds = shape.querySelector('Bounds');
+      if (!id || !bounds) return;
+      map.set(id, {
+        x: parseFloat(bounds.getAttribute('x')),
+        y: parseFloat(bounds.getAttribute('y')),
+        w: parseFloat(bounds.getAttribute('width')),
+        h: parseFloat(bounds.getAttribute('height')),
+      });
+    });
+    return map;
+  }
+
+  // ========================================
+  // ② LaneをX方向→Y方向に並べ直す
+  // ========================================
   doc.querySelectorAll('[processRef]').forEach(participant => {
     const participantId = participant.getAttribute('id');
     const processRef = participant.getAttribute('processRef');
     const process = doc.querySelector(`[id="${processRef}"]`);
     if (!process) return;
 
-    // このParticipantのBPMNShape情報
     const participantShape = doc.querySelector(
       `BPMNShape[bpmnElement="${participantId}"]`
     );
@@ -805,11 +825,9 @@ function fixLaneLayout(xml) {
     const pH = parseFloat(pBounds.getAttribute('height'));
     const pW = parseFloat(pBounds.getAttribute('width'));
 
-    // このProcessのLane一覧を取得
     const lanes = [...process.querySelectorAll('lane')];
     if (lanes.length === 0) return;
 
-    // 各LaneのBPMNShapeを取得
     const laneShapes = lanes.map(lane => {
       const laneId = lane.getAttribute('id');
       const shape = doc.querySelector(`BPMNShape[bpmnElement="${laneId}"]`);
@@ -835,30 +853,26 @@ function fixLaneLayout(xml) {
     const isHorizontallyArranged =
       new Set(xValues).size > 1 && new Set(yValues).size === 1;
 
-    if (!isHorizontallyArranged) return; // すでにY方向なら何もしない
+    if (!isHorizontallyArranged) return;
 
-    // X座標でソート（左→右の順をY方向の上→下に変換）
+    // X座標でソート
     laneShapes.sort((a, b) => a.x - b.x);
 
-    // 各LaneをY方向に並べ直す
     const laneHeight = Math.floor(pH / laneShapes.length);
-    const labelWidth = 30; // レーンラベルの幅
+    const labelWidth = 30;
 
     laneShapes.forEach((laneInfo, index) => {
       const oldLaneX = laneInfo.x;
-      const oldLaneW = laneInfo.w;
       const newLaneY = pY + index * laneHeight;
       const newLaneH = index === laneShapes.length - 1
-        ? pH - index * laneHeight  // 最後のレーンは余りを吸収
+        ? pH - index * laneHeight
         : laneHeight;
 
-      // Laneのboundsを更新
       laneInfo.bounds.setAttribute('x', pX + labelWidth);
       laneInfo.bounds.setAttribute('y', newLaneY);
       laneInfo.bounds.setAttribute('width', pW - labelWidth);
       laneInfo.bounds.setAttribute('height', newLaneH);
 
-      // このLane内の要素を移動
       const flowNodeRefs = [...laneInfo.lane.querySelectorAll('flowNodeRef')]
         .map(ref => ref.textContent.trim());
 
@@ -869,13 +883,10 @@ function fixLaneLayout(xml) {
         if (!nodeBounds) return;
 
         const nodeX = parseFloat(nodeBounds.getAttribute('x'));
-        const nodeY = parseFloat(nodeBounds.getAttribute('y'));
-        const nodeW = parseFloat(nodeBounds.getAttribute('width'));
         const nodeH = parseFloat(nodeBounds.getAttribute('height'));
+        const nodeW = parseFloat(nodeBounds.getAttribute('width'));
 
-        // 旧LaneX基準の相対X座標を計算
         const relX = nodeX - oldLaneX;
-        // 新しいY座標 = 新LaneY + レーン内の中央配置
         const newNodeY = newLaneY + (newLaneH - nodeH) / 2;
         const newNodeX = pX + labelWidth + relX;
 
@@ -883,14 +894,18 @@ function fixLaneLayout(xml) {
         nodeBounds.setAttribute('y', newNodeY);
       });
     });
-
-    // Participant全体の高さを調整（Laneが縦に並ぶため）
-    // widthはそのまま、heightはlane数×laneHeightに
-    pBounds.setAttribute('height', pH);
   });
 
- // SequenceFlowのwaypointを再計算（要素移動後）
-  // ✅ L字に変更
+  // ========================================
+  // ③ Lane移動後にshapeBoundsを再収集（★ここが修正点）
+  // ========================================
+  const shapeBounds = collectShapeBounds();
+
+  // ========================================
+  // ④ SequenceFlowのwaypointを再計算（L字）
+  // ========================================
+  const diNs = 'http://www.omg.org/spec/DD/20100524/DI';
+
   doc.querySelectorAll('BPMNEdge').forEach(edge => {
     const bpmnElementId = edge.getAttribute('bpmnElement');
     const flow = doc.querySelector(`sequenceFlow[id="${bpmnElementId}"]`);
@@ -902,41 +917,15 @@ function fixLaneLayout(xml) {
     const target = shapeBounds.get(targetId);
     if (!source || !target) return;
 
-    // 既存waypointを全削除
     [...edge.querySelectorAll('waypoint')].forEach(wp => wp.remove());
 
-    // ✅ L字waypointを再生成
-    const diNs = 'http://www.omg.org/spec/DD/20100524/DI';
     const points = calcLWaypoints(source, target);
     points.forEach(p => {
-      const wp = edge.ownerDocument.createElementNS(diNs, 'di:waypoint');
+      const wp = doc.createElementNS(diNs, 'di:waypoint');
       wp.setAttribute('x', p.x);
       wp.setAttribute('y', p.y);
       edge.appendChild(wp);
     });
-  });
-
-  doc.querySelectorAll('BPMNEdge').forEach(edge => {
-    const bpmnElementId = edge.getAttribute('bpmnElement');
-    const flow = doc.querySelector(`sequenceFlow[id="${bpmnElementId}"]`);
-    if (!flow) return;
-
-    const sourceId = flow.getAttribute('sourceRef');
-    const targetId = flow.getAttribute('targetRef');
-    const source = shapeBounds.get(sourceId);
-    const target = shapeBounds.get(targetId);
-    if (!source || !target) return;
-
-    // waypointを再計算
-    const waypoints = edge.querySelectorAll('waypoint');
-    if (waypoints.length >= 2) {
-      waypoints[0].setAttribute('x', source.x + source.w);
-      waypoints[0].setAttribute('y', source.y + source.h / 2);
-      waypoints[waypoints.length - 1].setAttribute('x', target.x);
-      waypoints[waypoints.length - 1].setAttribute(
-        'y', target.y + target.h / 2
-      );
-    }
   });
 
   return serializer.serializeToString(doc);
