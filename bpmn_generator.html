@@ -680,6 +680,9 @@ async function applyAutoLayout(xml) {
       'https://unpkg.com/yet-another-bpmn-auto-layout@2.0.0/dist/index.js'
     );
     let result = await module.layoutProcess(xml);
+
+    // 縦レイアウトか横レイアウトかを自動判定して変換
+    result = normalizeToHorizontal(result);
     result = addSequenceFlowEdges(result);
     result = fixLaneLayout(result);
     result = fixMessageFlowEdges(result);
@@ -688,6 +691,167 @@ async function applyAutoLayout(xml) {
     console.warn('autoLayout failed:', e);
     return xml;
   }
+}
+
+// ============================================
+// 縦レイアウトを横レイアウトに変換（自動判定）
+// ============================================
+function normalizeToHorizontal(xml) {
+  const parser = new DOMParser();
+  const serializer = new XMLSerializer();
+  const doc = parser.parseFromString(xml, 'application/xml');
+
+  // Participantのサイズで縦横を判定
+  const firstParticipant = doc.querySelector('BPMNShape[bpmnElement^="Participant"]');
+  if (!firstParticipant) return xml;
+
+  const bounds = firstParticipant.querySelector('Bounds');
+  const w = parseFloat(bounds.getAttribute('width'));
+  const h = parseFloat(bounds.getAttribute('height'));
+
+  // 縦長（height > width）なら横に変換が必要
+  if (h <= w) return xml; // すでに横レイアウト
+
+  // ① 全Participantの情報収集・ソート
+  const participantShapes = [];
+  doc.querySelectorAll('BPMNShape').forEach(shape => {
+    const id = shape.getAttribute('bpmnElement') || '';
+    const elem = doc.querySelector(`participant[id="${id}"]`)
+               || doc.querySelector(`*|participant[id="${id}"]`);
+    if (!elem) return;
+    const b = shape.querySelector('Bounds');
+    if (!b) return;
+    participantShapes.push({
+      id, shape, bounds: b,
+      x: parseFloat(b.getAttribute('x')),
+      y: parseFloat(b.getAttribute('y')),
+      w: parseFloat(b.getAttribute('width')),
+      h: parseFloat(b.getAttribute('height')),
+    });
+  });
+
+  // Y座標でソート（上から順）
+  participantShapes.sort((a, b) => a.y - b.y);
+
+  // ② 各ParticipantのY→X変換後の新Y座標を計算
+  let currentY = 0;
+  const participantMap = new Map(); // id → { oldY, oldH, newY, newW, newH }
+  participantShapes.forEach(p => {
+    const newW = p.h; // 旧height → 新width
+    const newH = p.w; // 旧width  → 新height
+    participantMap.set(p.id, {
+      oldY: p.y,
+      oldH: p.h,
+      oldX: p.x,
+      oldW: p.w,
+      newY: currentY,
+      newW,
+      newH,
+    });
+    currentY += newH + 70;
+  });
+
+  // ③ 座標変換ヘルパー
+  // 縦レイアウトの(x,y) → 横レイアウトの(newX, newY)
+  function transformPoint(origX, origY) {
+    // どのParticipantに属するか判定
+    for (const [, p] of participantMap) {
+      if (origY >= p.oldY && origY <= p.oldY + p.oldH) {
+        const relY = origY - p.oldY; // Participant内Y相対座標
+        const relX = origX - 30;     // レーンラベル分を除いたX相対座標
+        return {
+          x: relY + 30,              // 縦のY相対 → 横のX
+          y: p.newY + relX + 30,     // 縦のX相対 → 横のY
+        };
+      }
+    }
+    // Participantに属さない場合（単純X↔Y）
+    return { x: origY, y: origX };
+  }
+
+  // ④ 全BPMNShapeを変換
+  doc.querySelectorAll('BPMNShape').forEach(shape => {
+    const id = shape.getAttribute('bpmnElement') || '';
+    const b  = shape.querySelector('Bounds');
+    if (!b) return;
+
+    const x = parseFloat(b.getAttribute('x'));
+    const y = parseFloat(b.getAttribute('y'));
+    const w = parseFloat(b.getAttribute('width'));
+    const h = parseFloat(b.getAttribute('height'));
+
+    // Participantか判定
+    const pInfo = participantMap.get(id);
+    if (pInfo) {
+      b.setAttribute('x', 0);
+      b.setAttribute('y', pInfo.newY);
+      b.setAttribute('width',  pInfo.newW);
+      b.setAttribute('height', pInfo.newH);
+      shape.setAttribute('isHorizontal', 'true');
+      return;
+    }
+
+    // Laneか判定
+    const laneElem = doc.querySelector(`lane[id="${id}"]`)
+                  || doc.querySelector(`*|lane[id="${id}"]`);
+    if (laneElem) {
+      // LaneのParticipantを特定
+      const parentPId = getLaneParticipantId(doc, id);
+      const pI = parentPId ? participantMap.get(parentPId) : null;
+      if (pI) {
+        const relY = y - pI.oldY;
+        const relX = x - 30;
+        b.setAttribute('x', relY + 30);
+        b.setAttribute('y', pI.newY + relX);
+        b.setAttribute('width',  h);
+        b.setAttribute('height', w);
+      } else {
+        b.setAttribute('x', y);
+        b.setAttribute('y', x);
+        b.setAttribute('width',  h);
+        b.setAttribute('height', w);
+      }
+      shape.setAttribute('isHorizontal', 'true');
+      return;
+    }
+
+    // Task / Gateway / Event
+    const pt = transformPoint(x, y);
+    b.setAttribute('x', pt.x);
+    b.setAttribute('y', pt.y);
+    b.setAttribute('width',  h);
+    b.setAttribute('height', w);
+  });
+
+  // ⑤ 全BPMNEdgeのwaypointを変換
+  doc.querySelectorAll('BPMNEdge').forEach(edge => {
+    edge.querySelectorAll('waypoint').forEach(wp => {
+      const x = parseFloat(wp.getAttribute('x'));
+      const y = parseFloat(wp.getAttribute('y'));
+      const pt = transformPoint(x, y);
+      wp.setAttribute('x', pt.x);
+      wp.setAttribute('y', pt.y);
+    });
+  });
+
+  return serializer.serializeToString(doc);
+}
+
+// Laneが属するParticipantのIDを返す
+function getLaneParticipantId(doc, laneId) {
+  const participants = doc.querySelectorAll('[processRef]');
+  for (const p of participants) {
+    const processId = p.getAttribute('processRef');
+    const process   = doc.querySelector(`[id="${processId}"]`);
+    if (!process) continue;
+    const lanes = process.querySelectorAll('lane');
+    for (const lane of lanes) {
+      if (lane.getAttribute('id') === laneId) {
+        return p.getAttribute('id');
+      }
+    }
+  }
+  return null;
 }
 
 // ============================================
