@@ -721,28 +721,53 @@ function enrichSequenceFlows(xml) {
 // bpmn-auto-layoutを使った自動レイアウト
 async function applyAutoLayout(xml) {
   try {
-    const module = await import(
+    const { BpmnModdle } = await import('bpmn-moddle');
+    const layoutModule = await import(
       'https://unpkg.com/yet-another-bpmn-auto-layout@2.0.0/dist/index.js'
     );
+
     const enriched = enrichSequenceFlows(xml);
-    let result = await module.layoutProcess(enriched);
+
+    // ① XML文字列 → moddleオブジェクト
+    const moddle = new BpmnModdle();
+    const { rootElement } = await moddle.fromXML(enriched);
+
+    // ② layoutProcess にはmoddleオブジェクトを渡す
+    await layoutModule.layoutProcess(rootElement, moddle);
+
+    // ③ moddleオブジェクト → XML文字列
+    const { xml: layoutedXml } = await moddle.toXML(rootElement, { format: true });
+
+    // ④ 名前空間プレフィックスを正規化（ns0: / ns1: 等 → bpmn2: / bpmndi: 等）
+    let result = normalizePrefixes(layoutedXml);
 
     result = normalizeToHorizontal(result);
     result = addSequenceFlowEdges(result);
     result = fixLaneLayout(result);
     result = fixMessageFlowEdges(result);
-    result = fixCrossLaneXPositions(result); // ★ 追加
+    result = fixCrossLaneXPositions(result);
     return result;
   } catch(e) {
     console.warn('autoLayout failed:', e);
-    return xml;
+    // フォールバック: DI情報がない場合はそのまま渡すと描画失敗するため
+    // 最低限のDI情報をXMLに付与して返す
+    try {
+      return buildMinimalDi(xml);
+    } catch(e2) {
+      console.warn('buildMinimalDi also failed:', e2);
+      return xml;
+    }
   }
 }
 
 // ============================================
-// 縦レイアウトを横レイアウトに変換（自動判定）
+// ⑦ 縦レイアウトを横レイアウトに変換
+//    layoutMode が 'vertical' の場合はスキップ
 // ============================================
 function normalizeToHorizontal(xml) {
+  // ユーザーが縦レイアウトを選択している場合は変換しない
+  if (layoutMode === 'vertical') return xml;
+
   const parser = new DOMParser();
   const serializer = new XMLSerializer();
   const doc = parser.parseFromString(xml, 'application/xml');
@@ -941,7 +966,7 @@ function fixCrossLaneXPositions(xml) {
     // このプロセス内の全ノードIDを収集
     const nodeIds = new Set();
     const tags = [
-      'startEvent','endEvent','userTask','exclusiveGateway',
+      'startEvent','endEvent','task','userTask','exclusiveGateway',
       'parallelGateway','serviceTask','scriptTask','manualTask',
       'sendTask','receiveTask','intermediateThrowEvent',
       'intermediateCatchEvent','subProcess'
@@ -1047,7 +1072,7 @@ function fixCrossLaneXPositions(xml) {
 
     let maxRight = 0;
     const tags = [
-      'startEvent','endEvent','userTask','exclusiveGateway',
+      'startEvent','endEvent','task','userTask','exclusiveGateway',
       'parallelGateway','serviceTask','scriptTask','manualTask',
       'sendTask','receiveTask'
     ];
@@ -1210,6 +1235,127 @@ function calcMessageFlowWaypoints(source, target) {
     { x: tx, y: midY },
     { x: tx, y: ty   },
   ];
+}
+
+// ============================================
+// ⑧ 名前空間プレフィックス正規化
+//    XMLSerializer が ns0: / ns1: 等に置換する問題を修正
+// ============================================
+function normalizePrefixes(xml) {
+  const nsMap = {
+    'http://www.omg.org/spec/BPMN/20100524/MODEL': 'bpmn2',
+    'http://www.omg.org/spec/BPMN/20100524/DI':    'bpmndi',
+    'http://www.omg.org/spec/DD/20100524/DC':       'dc',
+    'http://www.omg.org/spec/DD/20100524/DI':       'di',
+  };
+
+  const declPattern = /xmlns:([a-zA-Z0-9_]+)="([^"]+)"/g;
+  let m;
+  const prefixRemap = {};
+  while ((m = declPattern.exec(xml)) !== null) {
+    const [, prefix, uri] = m;
+    const canonical = nsMap[uri];
+    if (canonical && prefix !== canonical) {
+      prefixRemap[prefix] = canonical;
+    }
+  }
+
+  if (Object.keys(prefixRemap).length === 0) return xml;
+
+  let result = xml;
+  for (const [oldPfx, newPfx] of Object.entries(prefixRemap)) {
+    const tagPattern = new RegExp(`(</?|\\s)${oldPfx}:`, 'g');
+    result = result.replace(tagPattern, `$1${newPfx}:`);
+    const nsDecl = new RegExp(`xmlns:${oldPfx}=`, 'g');
+    result = result.replace(nsDecl, `xmlns:${newPfx}=`);
+  }
+  return result;
+}
+
+// ============================================
+// フォールバック用: DI情報なしXMLに最低限のDIを付与
+// ============================================
+function buildMinimalDi(xml) {
+  const parser = new DOMParser();
+  const serializer = new XMLSerializer();
+  const doc = parser.parseFromString(xml, 'application/xml');
+
+  if (doc.querySelector('BPMNDiagram')) return xml;
+
+  const bpmndiNs = 'http://www.omg.org/spec/BPMN/20100524/DI';
+  const dcNs     = 'http://www.omg.org/spec/DD/20100524/DC';
+  const diNs     = 'http://www.omg.org/spec/DD/20100524/DI';
+
+  const definitions = doc.documentElement;
+  const collaboration = doc.querySelector('collaboration');
+  const planeElement  = collaboration || doc.querySelector('process');
+  if (!planeElement) return xml;
+
+  const diagram = doc.createElementNS(bpmndiNs, 'bpmndi:BPMNDiagram');
+  diagram.setAttribute('id', 'BPMNDiagram_1');
+  const plane = doc.createElementNS(bpmndiNs, 'bpmndi:BPMNPlane');
+  plane.setAttribute('id', 'BPMNPlane_1');
+  plane.setAttribute('bpmnElement', planeElement.getAttribute('id'));
+  diagram.appendChild(plane);
+
+  const TAGS = ['startEvent','endEvent','task','userTask','serviceTask',
+    'scriptTask','manualTask','sendTask','receiveTask',
+    'exclusiveGateway','parallelGateway','inclusiveGateway',
+    'intermediateThrowEvent','intermediateCatchEvent','subProcess'];
+  let xPos = 100;
+  const NODE_GAP = 150;
+
+  TAGS.forEach(tag => {
+    doc.querySelectorAll(tag).forEach(node => {
+      const id = node.getAttribute('id');
+      if (!id) return;
+      const shape = doc.createElementNS(bpmndiNs, 'bpmndi:BPMNShape');
+      shape.setAttribute('id', id + '_di');
+      shape.setAttribute('bpmnElement', id);
+      const bounds = doc.createElementNS(dcNs, 'dc:Bounds');
+      const isEvent   = tag.includes('Event');
+      const isGateway = tag.includes('Gateway');
+      const w = isEvent ? 36 : isGateway ? 50 : 100;
+      const h = isEvent ? 36 : isGateway ? 50 : 80;
+      bounds.setAttribute('x', xPos);
+      bounds.setAttribute('y', 200);
+      bounds.setAttribute('width', w);
+      bounds.setAttribute('height', h);
+      shape.appendChild(bounds);
+      plane.appendChild(shape);
+      xPos += NODE_GAP;
+    });
+  });
+
+  doc.querySelectorAll('sequenceFlow').forEach(flow => {
+    const id  = flow.getAttribute('id');
+    const edge = doc.createElementNS(bpmndiNs, 'bpmndi:BPMNEdge');
+    edge.setAttribute('id', id + '_di');
+    edge.setAttribute('bpmnElement', id);
+    const wp1 = doc.createElementNS(diNs, 'di:waypoint');
+    wp1.setAttribute('x', 100); wp1.setAttribute('y', 218);
+    const wp2 = doc.createElementNS(diNs, 'di:waypoint');
+    wp2.setAttribute('x', 250); wp2.setAttribute('y', 218);
+    edge.appendChild(wp1);
+    edge.appendChild(wp2);
+    plane.appendChild(edge);
+  });
+
+  definitions.appendChild(diagram);
+  return serializer.serializeToString(doc);
+}
+
+// ============================================
+// ③ ノードが属するLane要素を返す
+// ============================================
+function getLaneOfNode(doc, nodeId) {
+  const lanes = doc.querySelectorAll('lane');
+  for (const lane of lanes) {
+    const refs = [...lane.querySelectorAll('flowNodeRef')]
+      .map(r => r.textContent.trim());
+    if (refs.includes(nodeId)) return lane;
+  }
+  return null;
 }
 
 // ============================================
