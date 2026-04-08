@@ -680,11 +680,9 @@ async function applyAutoLayout(xml) {
       'https://unpkg.com/yet-another-bpmn-auto-layout@2.0.0/dist/index.js'
     );
     let result = await module.layoutProcess(xml);
-
-    result = addSequenceFlowEdges(result);   // SequenceFlow追加（L字）
-    result = fixLaneLayout(result);          // Lane縦並び修正
-    result = fixMessageFlowEdges(result);    // MessageFlow L字修正
-
+    result = addSequenceFlowEdges(result);
+    result = fixLaneLayout(result);
+    result = fixMessageFlowEdges(result);
     return result;
   } catch(e) {
     console.warn('autoLayout failed:', e);
@@ -693,24 +691,17 @@ async function applyAutoLayout(xml) {
 }
 
 // ============================================
-// L字waypoint計算（共通）
+// L字waypoint計算（SequenceFlow用・横方向）
 // ============================================
 function calcLWaypoints(source, target) {
-  const sx = source.x + source.w;       // ソース右端
-  const sy = source.y + source.h / 2;   // ソース中央Y
-  const tx = target.x;                  // ターゲット左端
-  const ty = target.y + target.h / 2;   // ターゲット中央Y
+  const sx = source.x + source.w;
+  const sy = source.y + source.h / 2;
+  const tx = target.x;
+  const ty = target.y + target.h / 2;
 
   if (Math.abs(sy - ty) < 5) {
-    // ほぼ同じY座標 → 直線（waypoint2点）
-    return [
-      { x: sx, y: sy },
-      { x: tx, y: ty },
-    ];
+    return [{ x: sx, y: sy }, { x: tx, y: ty }];
   }
-
-  // L字（waypoint3点）
-  // ソース右端 → 中間X（ソースとターゲットの中間） → ターゲット左端
   const midX = Math.round((sx + tx) / 2);
   return [
     { x: sx,   y: sy },
@@ -719,7 +710,52 @@ function calcLWaypoints(source, target) {
     { x: tx,   y: ty },
   ];
 }
-  
+
+// ============================================
+// L字waypoint計算（MessageFlow用・縦方向）
+// ============================================
+function calcMessageFlowWaypoints(source, target) {
+  const sx = source.x + source.w / 2;
+  const tx = target.x + target.w / 2;
+  let sy, ty;
+  if (source.y < target.y) {
+    sy = source.y + source.h;
+    ty = target.y;
+  } else {
+    sy = source.y;
+    ty = target.y + target.h;
+  }
+  if (Math.abs(sx - tx) < 5) {
+    return [{ x: sx, y: sy }, { x: tx, y: ty }];
+  }
+  const midY = Math.round((sy + ty) / 2);
+  return [
+    { x: sx, y: sy   },
+    { x: sx, y: midY },
+    { x: tx, y: midY },
+    { x: tx, y: ty   },
+  ];
+}
+
+// ============================================
+// shapeBounds収集（共通）
+// ============================================
+function collectShapeBounds(doc) {
+  const map = new Map();
+  doc.querySelectorAll('BPMNShape').forEach(shape => {
+    const id = shape.getAttribute('bpmnElement');
+    const bounds = shape.querySelector('Bounds');
+    if (!id || !bounds) return;
+    map.set(id, {
+      x: parseFloat(bounds.getAttribute('x')),
+      y: parseFloat(bounds.getAttribute('y')),
+      w: parseFloat(bounds.getAttribute('width')),
+      h: parseFloat(bounds.getAttribute('height')),
+    });
+  });
+  return map;
+}
+
 // ============================================
 // ① SequenceFlowのBPMNEdgeを追加
 // ============================================
@@ -728,18 +764,7 @@ function addSequenceFlowEdges(xml) {
   const serializer = new XMLSerializer();
   const doc = parser.parseFromString(xml, 'application/xml');
 
-  const shapeBounds = new Map();
-  doc.querySelectorAll('BPMNShape').forEach(shape => {
-    const id = shape.getAttribute('bpmnElement');
-    const bounds = shape.querySelector('Bounds');
-    if (!id || !bounds) return;
-    shapeBounds.set(id, {
-      x: parseFloat(bounds.getAttribute('x')),
-      y: parseFloat(bounds.getAttribute('y')),
-      w: parseFloat(bounds.getAttribute('width')),
-      h: parseFloat(bounds.getAttribute('height')),
-    });
-  });
+  const shapeBounds = collectShapeBounds(doc);
 
   const existingEdges = new Set();
   doc.querySelectorAll('BPMNEdge').forEach(edge => {
@@ -747,26 +772,22 @@ function addSequenceFlowEdges(xml) {
   });
 
   const plane = doc.querySelector('BPMNPlane');
-  const diNs = 'http://www.omg.org/spec/DD/20100524/DI';
+  const diNs   = 'http://www.omg.org/spec/DD/20100524/DI';
   const bpmndiNs = 'http://www.omg.org/spec/BPMN/20100524/DI';
 
   doc.querySelectorAll('sequenceFlow').forEach(flow => {
     const id = flow.getAttribute('id');
     if (existingEdges.has(id)) return;
 
-    const sourceId = flow.getAttribute('sourceRef');
-    const targetId = flow.getAttribute('targetRef');
-    const source = shapeBounds.get(sourceId);
-    const target = shapeBounds.get(targetId);
+    const source = shapeBounds.get(flow.getAttribute('sourceRef'));
+    const target = shapeBounds.get(flow.getAttribute('targetRef'));
     if (!source || !target) return;
 
     const edge = doc.createElementNS(bpmndiNs, 'bpmndi:BPMNEdge');
     edge.setAttribute('id', id + '_di');
     edge.setAttribute('bpmnElement', id);
 
-    // ✅ L字waypoint
-    const points = calcLWaypoints(source, target);
-    points.forEach(p => {
+    calcLWaypoints(source, target).forEach(p => {
       const wp = doc.createElementNS(diNs, 'di:waypoint');
       wp.setAttribute('x', p.x);
       wp.setAttribute('y', p.y);
@@ -780,45 +801,26 @@ function addSequenceFlowEdges(xml) {
 }
 
 // ============================================
-// ② LaneをX方向→Y方向に並べ直す
+// ② LaneをY方向に並べ直す＋waypoint再計算
 // ============================================
 function fixLaneLayout(xml) {
   const parser = new DOMParser();
   const serializer = new XMLSerializer();
   const doc = parser.parseFromString(xml, 'application/xml');
+  const diNs = 'http://www.omg.org/spec/DD/20100524/DI';
 
-  // ========================================
-  // ① shapeBoundsを最初に定義（★ここが修正点）
-  // ========================================
-  function collectShapeBounds() {
-    const map = new Map();
-    doc.querySelectorAll('BPMNShape').forEach(shape => {
-      const id = shape.getAttribute('bpmnElement');
-      const bounds = shape.querySelector('Bounds');
-      if (!id || !bounds) return;
-      map.set(id, {
-        x: parseFloat(bounds.getAttribute('x')),
-        y: parseFloat(bounds.getAttribute('y')),
-        w: parseFloat(bounds.getAttribute('width')),
-        h: parseFloat(bounds.getAttribute('height')),
-      });
-    });
-    return map;
-  }
-
-  // ========================================
-  // ② LaneをX方向→Y方向に並べ直す
-  // ========================================
+  // --- Lane並べ直し ---
   doc.querySelectorAll('[processRef]').forEach(participant => {
     const participantId = participant.getAttribute('id');
-    const processRef = participant.getAttribute('processRef');
-    const process = doc.querySelector(`[id="${processRef}"]`);
+    const processRef    = participant.getAttribute('processRef');
+    const process       = doc.querySelector(`[id="${processRef}"]`);
     if (!process) return;
 
     const participantShape = doc.querySelector(
       `BPMNShape[bpmnElement="${participantId}"]`
     );
     if (!participantShape) return;
+
     const pBounds = participantShape.querySelector('Bounds');
     const pX = parseFloat(pBounds.getAttribute('x'));
     const pY = parseFloat(pBounds.getAttribute('y'));
@@ -830,14 +832,11 @@ function fixLaneLayout(xml) {
 
     const laneShapes = lanes.map(lane => {
       const laneId = lane.getAttribute('id');
-      const shape = doc.querySelector(`BPMNShape[bpmnElement="${laneId}"]`);
+      const shape  = doc.querySelector(`BPMNShape[bpmnElement="${laneId}"]`);
       if (!shape) return null;
       const bounds = shape.querySelector('Bounds');
       return {
-        laneId,
-        lane,
-        shape,
-        bounds,
+        laneId, lane, shape, bounds,
         x: parseFloat(bounds.getAttribute('x')),
         y: parseFloat(bounds.getAttribute('y')),
         w: parseFloat(bounds.getAttribute('width')),
@@ -847,19 +846,15 @@ function fixLaneLayout(xml) {
 
     if (laneShapes.length === 0) return;
 
-    // LaneがX方向に並んでいるか確認
-    const xValues = laneShapes.map(l => l.x);
-    const yValues = laneShapes.map(l => l.y);
-    const isHorizontallyArranged =
-      new Set(xValues).size > 1 && new Set(yValues).size === 1;
-
+    const xSet = new Set(laneShapes.map(l => l.x));
+    const ySet = new Set(laneShapes.map(l => l.y));
+    const isHorizontallyArranged = xSet.size > 1 && ySet.size === 1;
     if (!isHorizontallyArranged) return;
 
-    // X座標でソート
     laneShapes.sort((a, b) => a.x - b.x);
 
-    const laneHeight = Math.floor(pH / laneShapes.length);
     const labelWidth = 30;
+    const laneHeight = Math.floor(pH / laneShapes.length);
 
     laneShapes.forEach((laneInfo, index) => {
       const oldLaneX = laneInfo.x;
@@ -870,57 +865,45 @@ function fixLaneLayout(xml) {
 
       laneInfo.bounds.setAttribute('x', pX + labelWidth);
       laneInfo.bounds.setAttribute('y', newLaneY);
-      laneInfo.bounds.setAttribute('width', pW - labelWidth);
+      laneInfo.bounds.setAttribute('width',  pW - labelWidth);
       laneInfo.bounds.setAttribute('height', newLaneH);
 
-      const flowNodeRefs = [...laneInfo.lane.querySelectorAll('flowNodeRef')]
-        .map(ref => ref.textContent.trim());
+      [...laneInfo.lane.querySelectorAll('flowNodeRef')]
+        .map(ref => ref.textContent.trim())
+        .forEach(nodeId => {
+          const nodeShape = doc.querySelector(
+            `BPMNShape[bpmnElement="${nodeId}"]`
+          );
+          if (!nodeShape) return;
+          const nb = nodeShape.querySelector('Bounds');
+          if (!nb) return;
 
-      flowNodeRefs.forEach(nodeId => {
-        const nodeShape = doc.querySelector(`BPMNShape[bpmnElement="${nodeId}"]`);
-        if (!nodeShape) return;
-        const nodeBounds = nodeShape.querySelector('Bounds');
-        if (!nodeBounds) return;
+          const nodeX = parseFloat(nb.getAttribute('x'));
+          const nodeH = parseFloat(nb.getAttribute('height'));
+          const relX  = nodeX - oldLaneX;
 
-        const nodeX = parseFloat(nodeBounds.getAttribute('x'));
-        const nodeH = parseFloat(nodeBounds.getAttribute('height'));
-        const nodeW = parseFloat(nodeBounds.getAttribute('width'));
-
-        const relX = nodeX - oldLaneX;
-        const newNodeY = newLaneY + (newLaneH - nodeH) / 2;
-        const newNodeX = pX + labelWidth + relX;
-
-        nodeBounds.setAttribute('x', newNodeX);
-        nodeBounds.setAttribute('y', newNodeY);
-      });
+          nb.setAttribute('x', pX + labelWidth + relX);
+          nb.setAttribute('y', newLaneY + (newLaneH - nodeH) / 2);
+        });
     });
   });
 
-  // ========================================
-  // ③ Lane移動後にshapeBoundsを再収集（★ここが修正点）
-  // ========================================
-  const shapeBounds = collectShapeBounds();
+  // --- Lane移動後にshapeBoundsを再収集 ---
+  const shapeBounds = collectShapeBounds(doc);  // ★ doc を引数で渡す
 
-  // ========================================
-  // ④ SequenceFlowのwaypointを再計算（L字）
-  // ========================================
-  const diNs = 'http://www.omg.org/spec/DD/20100524/DI';
-
+  // --- SequenceFlowのwaypoint再計算（L字）---
   doc.querySelectorAll('BPMNEdge').forEach(edge => {
     const bpmnElementId = edge.getAttribute('bpmnElement');
     const flow = doc.querySelector(`sequenceFlow[id="${bpmnElementId}"]`);
     if (!flow) return;
 
-    const sourceId = flow.getAttribute('sourceRef');
-    const targetId = flow.getAttribute('targetRef');
-    const source = shapeBounds.get(sourceId);
-    const target = shapeBounds.get(targetId);
+    const source = shapeBounds.get(flow.getAttribute('sourceRef'));
+    const target = shapeBounds.get(flow.getAttribute('targetRef'));
     if (!source || !target) return;
 
     [...edge.querySelectorAll('waypoint')].forEach(wp => wp.remove());
 
-    const points = calcLWaypoints(source, target);
-    points.forEach(p => {
+    calcLWaypoints(source, target).forEach(p => {
       const wp = doc.createElementNS(diNs, 'di:waypoint');
       wp.setAttribute('x', p.x);
       wp.setAttribute('y', p.y);
@@ -931,77 +914,29 @@ function fixLaneLayout(xml) {
   return serializer.serializeToString(doc);
 }
 
-function calcMessageFlowWaypoints(source, target) {
-  // MessageFlowは上下Participant間 → 下端/上端から出入り
-  const sx = source.x + source.w / 2;  // ソース中央X
-  const tx = target.x + target.w / 2;  // ターゲット中央X
-
-  let sy, ty;
-  if (source.y < target.y) {
-    // ソースが上 → ソース下端からターゲット上端へ
-    sy = source.y + source.h;
-    ty = target.y;
-  } else {
-    // ソースが下 → ソース上端からターゲット下端へ
-    sy = source.y;
-    ty = target.y + target.h;
-  }
-
-  if (Math.abs(sx - tx) < 5) {
-    // ほぼ同じX座標 → 直線
-    return [
-      { x: sx, y: sy },
-      { x: tx, y: ty },
-    ];
-  }
-
-  // L字（4点）
-  const midY = Math.round((sy + ty) / 2);
-  return [
-    { x: sx, y: sy   },
-    { x: sx, y: midY },
-    { x: tx, y: midY },
-    { x: tx, y: ty   },
-  ];
-}
-
+// ============================================
+// ③ MessageFlowをL字に修正
+// ============================================
 function fixMessageFlowEdges(xml) {
   const parser = new DOMParser();
   const serializer = new XMLSerializer();
   const doc = parser.parseFromString(xml, 'application/xml');
-
-  const shapeBounds = new Map();
-  doc.querySelectorAll('BPMNShape').forEach(shape => {
-    const id = shape.getAttribute('bpmnElement');
-    const bounds = shape.querySelector('Bounds');
-    if (!id || !bounds) return;
-    shapeBounds.set(id, {
-      x: parseFloat(bounds.getAttribute('x')),
-      y: parseFloat(bounds.getAttribute('y')),
-      w: parseFloat(bounds.getAttribute('width')),
-      h: parseFloat(bounds.getAttribute('height')),
-    });
-  });
-
   const diNs = 'http://www.omg.org/spec/DD/20100524/DI';
+
+  const shapeBounds = collectShapeBounds(doc);  // ★ doc を引数で渡す
 
   doc.querySelectorAll('BPMNEdge').forEach(edge => {
     const bpmnElementId = edge.getAttribute('bpmnElement');
     const flow = doc.querySelector(`messageFlow[id="${bpmnElementId}"]`);
     if (!flow) return;
 
-    const sourceId = flow.getAttribute('sourceRef');
-    const targetId = flow.getAttribute('targetRef');
-    const source = shapeBounds.get(sourceId);
-    const target = shapeBounds.get(targetId);
+    const source = shapeBounds.get(flow.getAttribute('sourceRef'));
+    const target = shapeBounds.get(flow.getAttribute('targetRef'));
     if (!source || !target) return;
 
-    // 既存waypointを全削除
     [...edge.querySelectorAll('waypoint')].forEach(wp => wp.remove());
 
-    // ✅ L字waypoint（MessageFlow用）
-    const points = calcMessageFlowWaypoints(source, target);
-    points.forEach(p => {
+    calcMessageFlowWaypoints(source, target).forEach(p => {
       const wp = doc.createElementNS(diNs, 'di:waypoint');
       wp.setAttribute('x', p.x);
       wp.setAttribute('y', p.y);
