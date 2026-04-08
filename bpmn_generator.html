@@ -749,13 +749,18 @@ async function applyAutoLayout(xml) {
     return result;
   } catch(e) {
     console.warn('autoLayout failed:', e);
-    // フォールバック: DI情報がない場合はそのまま渡すと描画失敗するため
-    // 最低限のDI情報をXMLに付与して返す
+    // フォールバック: buildMinimalDi でDI情報を付与してから
+    // post-processingパイプラインを通す
     try {
-      return buildMinimalDi(xml);
+      let result = buildMinimalDi(xml);
+      result = addSequenceFlowEdges(result);
+      result = fixLaneLayout(result);
+      result = fixMessageFlowEdges(result);
+      result = fixCrossLaneXPositions(result);
+      return result;
     } catch(e2) {
-      console.warn('buildMinimalDi also failed:', e2);
-      return xml;
+      console.warn('fallback pipeline failed:', e2);
+      try { return buildMinimalDi(xml); } catch(e3) { return xml; }
     }
   }
 }
@@ -1368,6 +1373,7 @@ function normalizePrefixes(xml) {
 
 // ============================================
 // フォールバック用: DI情報なしXMLに最低限のDIを付与
+// Participant / Lane / ノードを正しいY座標に配置する
 // ============================================
 function buildMinimalDi(xml) {
   const parser = new DOMParser();
@@ -1382,60 +1388,246 @@ function buildMinimalDi(xml) {
 
   const definitions = doc.documentElement;
   const collaboration = doc.querySelector('collaboration');
-  const planeElement  = collaboration || doc.querySelector('process');
-  if (!planeElement) return xml;
+  const planeRef = collaboration || doc.querySelector('process');
+  if (!planeRef) return xml;
 
   const diagram = doc.createElementNS(bpmndiNs, 'bpmndi:BPMNDiagram');
   diagram.setAttribute('id', 'BPMNDiagram_1');
   const plane = doc.createElementNS(bpmndiNs, 'bpmndi:BPMNPlane');
   plane.setAttribute('id', 'BPMNPlane_1');
-  plane.setAttribute('bpmnElement', planeElement.getAttribute('id'));
+  plane.setAttribute('bpmnElement', planeRef.getAttribute('id'));
   diagram.appendChild(plane);
+  definitions.appendChild(diagram);
 
-  const TAGS = ['startEvent','endEvent','task','userTask','serviceTask',
+  // レイアウト定数
+  const LABEL_W  = 30;   // Participant/Laneのラベル幅
+  const NODE_GAP = 40;   // ノード間隔
+  const ROW_PAD  = 30;   // Lane上下パディング
+  const PART_GAP = 20;   // Participant間の余白
+
+  // ノードサイズ計算
+  function nodeSize(tag) {
+    if (!tag) return { w: 100, h: 80 };
+    if (tag.includes('Event')) return { w: 36, h: 36 };
+    if (tag.includes('Gateway')) return { w: 50, h: 50 };
+    return { w: 100, h: 80 };
+  }
+
+  // タグ名からBPMN要素を探す
+  const FLOW_TAGS = ['startEvent','endEvent','task','userTask','serviceTask',
     'scriptTask','manualTask','sendTask','receiveTask',
     'exclusiveGateway','parallelGateway','inclusiveGateway',
     'intermediateThrowEvent','intermediateCatchEvent','subProcess'];
-  let xPos = 100;
-  const NODE_GAP = 150;
 
-  TAGS.forEach(tag => {
-    doc.querySelectorAll(tag).forEach(node => {
-      const id = node.getAttribute('id');
-      if (!id) return;
-      const shape = doc.createElementNS(bpmndiNs, 'bpmndi:BPMNShape');
-      shape.setAttribute('id', id + '_di');
-      shape.setAttribute('bpmnElement', id);
-      const bounds = doc.createElementNS(dcNs, 'dc:Bounds');
-      const isEvent   = tag.includes('Event');
-      const isGateway = tag.includes('Gateway');
-      const w = isEvent ? 36 : isGateway ? 50 : 100;
-      const h = isEvent ? 36 : isGateway ? 50 : 80;
-      bounds.setAttribute('x', xPos);
-      bounds.setAttribute('y', 200);
-      bounds.setAttribute('width', w);
-      bounds.setAttribute('height', h);
-      shape.appendChild(bounds);
-      plane.appendChild(shape);
-      xPos += NODE_GAP;
-    });
-  });
+  function getNodeTag(id) {
+    for (const tag of FLOW_TAGS) {
+      if (doc.querySelector(`${tag}[id="${id}"]`)) return tag;
+    }
+    return null;
+  }
 
-  doc.querySelectorAll('sequenceFlow').forEach(flow => {
-    const id  = flow.getAttribute('id');
+  // BPMNShapeを生成してplaneに追加
+  function addShape(id, x, y, w, h, extra = {}) {
+    const shape = doc.createElementNS(bpmndiNs, 'bpmndi:BPMNShape');
+    shape.setAttribute('id', id + '_di');
+    shape.setAttribute('bpmnElement', id);
+    for (const [k, v] of Object.entries(extra)) shape.setAttribute(k, v);
+    const b = doc.createElementNS(dcNs, 'dc:Bounds');
+    b.setAttribute('x', x); b.setAttribute('y', y);
+    b.setAttribute('width', w); b.setAttribute('height', h);
+    shape.appendChild(b);
+    plane.appendChild(shape);
+    return { x, y, w, h };
+  }
+
+  // BPMNEdgeを生成してplaneに追加
+  function addEdge(id, waypoints) {
     const edge = doc.createElementNS(bpmndiNs, 'bpmndi:BPMNEdge');
     edge.setAttribute('id', id + '_di');
     edge.setAttribute('bpmnElement', id);
-    const wp1 = doc.createElementNS(diNs, 'di:waypoint');
-    wp1.setAttribute('x', 100); wp1.setAttribute('y', 218);
-    const wp2 = doc.createElementNS(diNs, 'di:waypoint');
-    wp2.setAttribute('x', 250); wp2.setAttribute('y', 218);
-    edge.appendChild(wp1);
-    edge.appendChild(wp2);
+    waypoints.forEach(([x, y]) => {
+      const wp = doc.createElementNS(diNs, 'di:waypoint');
+      wp.setAttribute('x', x); wp.setAttribute('y', y);
+      edge.appendChild(wp);
+    });
     plane.appendChild(edge);
+  }
+
+  // ノード座標マップ（後でedge生成に使う）
+  const nodeBounds = new Map(); // id → {x,y,w,h}
+
+  // ==============================
+  // Collaborationあり: Participant + Lane を縦に積む
+  // ==============================
+  if (collaboration) {
+    const participants = [...collaboration.querySelectorAll('participant')];
+    let currentY = 0;
+
+    participants.forEach(participant => {
+      const pid      = participant.getAttribute('id');
+      const pName    = participant.getAttribute('name') || '';
+      const processId = participant.getAttribute('processRef');
+      const process  = processId ? doc.querySelector(`process[id="${processId}"]`) : null;
+
+      // このParticipantに属するノードを収集（Lane別 or 直接）
+      // Lane構造を確認
+      const lanes = process ? [...process.querySelectorAll('lane')] : [];
+
+      // ノードをLane別に分類
+      // Lane なし → 全ノードを1行に並べる
+      // Lane あり → Lane別に行を作る
+
+      // 各行の構造: { laneId, laneName, nodeIds[] }
+      let rows = [];
+      if (lanes.length === 0) {
+        // Lane なし: プロセス直属のノードをすべて1行に
+        const nodeIds = [];
+        FLOW_TAGS.forEach(tag => {
+          process && process.querySelectorAll(tag).forEach(el => {
+            nodeIds.push(el.getAttribute('id'));
+          });
+        });
+        rows.push({ laneId: null, laneName: null, nodeIds });
+      } else {
+        lanes.forEach(lane => {
+          const laneId   = lane.getAttribute('id');
+          const laneName = lane.getAttribute('name') || '';
+          const nodeIds  = [...lane.querySelectorAll('flowNodeRef')]
+            .map(r => r.textContent.trim());
+          rows.push({ laneId, laneName, nodeIds });
+        });
+      }
+
+      // 各行の高さを計算（ノードの最大高さ + 上下パディング）
+      const rowHeight = 80 + ROW_PAD * 2;  // タスク高さ80 + 上下30ずつ
+      const participantH = rowHeight * rows.length;
+      const participantX = 0;
+      const participantW_base = 1200; // 仮幅（後でノード配置後に拡張）
+
+      // Participant Shape を仮追加（幅は後で更新）
+      const pShape = doc.createElementNS(bpmndiNs, 'bpmndi:BPMNShape');
+      pShape.setAttribute('id', pid + '_di');
+      pShape.setAttribute('bpmnElement', pid);
+      pShape.setAttribute('isHorizontal', 'true');
+      const pBounds = doc.createElementNS(dcNs, 'dc:Bounds');
+      pBounds.setAttribute('x', participantX);
+      pBounds.setAttribute('y', currentY);
+      pBounds.setAttribute('width', participantW_base);
+      pBounds.setAttribute('height', participantH);
+      pShape.appendChild(pBounds);
+      plane.appendChild(pShape);
+
+      let maxNodeRight = participantX + LABEL_W + 80; // 最低幅を保証
+      const laneStartY = currentY;
+
+      rows.forEach((row, rowIndex) => {
+        const laneY = laneStartY + rowIndex * rowHeight;
+        const laneX = participantX + LABEL_W;
+
+        // Lane Shape
+        if (row.laneId) {
+          const lShape = doc.createElementNS(bpmndiNs, 'bpmndi:BPMNShape');
+          lShape.setAttribute('id', row.laneId + '_di');
+          lShape.setAttribute('bpmnElement', row.laneId);
+          lShape.setAttribute('isHorizontal', 'true');
+          const lBounds = doc.createElementNS(dcNs, 'dc:Bounds');
+          lBounds.setAttribute('x', laneX);
+          lBounds.setAttribute('y', laneY);
+          lBounds.setAttribute('width', participantW_base - LABEL_W);
+          lBounds.setAttribute('height', rowHeight);
+          lShape.appendChild(lBounds);
+          plane.appendChild(lShape);
+          // Lane Boundsも後で幅更新できるよう参照を保持
+          row._lBounds = lBounds;
+        }
+
+        // ノードをX方向に並べる
+        let nodeX = laneX + NODE_GAP;
+        const nodeCy = laneY + rowHeight / 2;
+
+        row.nodeIds.forEach(nodeId => {
+          const tag = getNodeTag(nodeId);
+          const { w, h } = nodeSize(tag);
+          const nodeY = nodeCy - h / 2;
+          nodeBounds.set(nodeId, { x: nodeX, y: nodeY, w, h });
+          addShape(nodeId, nodeX, nodeY, w, h);
+          nodeX += w + NODE_GAP;
+          maxNodeRight = Math.max(maxNodeRight, nodeX);
+        });
+      });
+
+      // Participant / Lane の幅を実際のノード右端に合わせて更新
+      const finalW = maxNodeRight + NODE_GAP;
+      pBounds.setAttribute('width', finalW);
+      rows.forEach(row => {
+        if (row._lBounds) row._lBounds.setAttribute('width', finalW - LABEL_W);
+      });
+
+      currentY += participantH + PART_GAP;
+    });
+
+  } else {
+    // ==============================
+    // Collaboration なし: 単一Process
+    // ==============================
+    const process = doc.querySelector('process');
+    if (!process) return xml;
+    let nodeX = 100;
+    const nodeY_base = 200;
+    FLOW_TAGS.forEach(tag => {
+      process.querySelectorAll(tag).forEach(el => {
+        const id = el.getAttribute('id');
+        const { w, h } = nodeSize(tag);
+        const nodeY = nodeY_base + (80 - h) / 2;
+        nodeBounds.set(id, { x: nodeX, y: nodeY, w, h });
+        addShape(id, nodeX, nodeY, w, h);
+        nodeX += w + NODE_GAP;
+      });
+    });
+  }
+
+  // ==============================
+  // Edge（sequenceFlow + messageFlow）のwaypoint生成
+  // ==============================
+  function edgeWaypoints(srcId, tgtId) {
+    const s = nodeBounds.get(srcId);
+    const t = nodeBounds.get(tgtId);
+    if (!s || !t) return [[100, 218], [250, 218]]; // フォールバック
+    const sx = s.x + s.w,       sy = s.y + s.h / 2;
+    const tx = t.x,              ty = t.y + t.h / 2;
+    if (Math.abs(sy - ty) < 5) return [[sx, sy], [tx, ty]];
+    // Y差あり → L字
+    if (sx <= tx) {
+      const midX = Math.round((sx + tx) / 2);
+      return [[sx, sy], [midX, sy], [midX, ty], [tx, ty]];
+    }
+    // 逆向き
+    const exitX = Math.min(s.x, t.x + t.w) - 20;
+    return [[s.x, sy], [exitX, sy], [exitX, ty], [t.x + t.w, ty]];
+  }
+
+  function msgWaypoints(srcId, tgtId) {
+    const s = nodeBounds.get(srcId);
+    const t = nodeBounds.get(tgtId);
+    if (!s || !t) return [[100, 218], [250, 218]];
+    const sx = s.x + s.w / 2, tx = t.x + t.w / 2;
+    const sy = s.y < t.y ? s.y + s.h : s.y;
+    const ty = s.y < t.y ? t.y       : t.y + t.h;
+    if (Math.abs(sx - tx) < 5) return [[sx, sy], [tx, ty]];
+    const midY = Math.round((sy + ty) / 2);
+    return [[sx, sy], [sx, midY], [tx, midY], [tx, ty]];
+  }
+
+  doc.querySelectorAll('sequenceFlow').forEach(flow => {
+    const id = flow.getAttribute('id');
+    addEdge(id, edgeWaypoints(flow.getAttribute('sourceRef'), flow.getAttribute('targetRef')));
   });
 
-  definitions.appendChild(diagram);
+  doc.querySelectorAll('messageFlow').forEach(flow => {
+    const id = flow.getAttribute('id');
+    addEdge(id, msgWaypoints(flow.getAttribute('sourceRef'), flow.getAttribute('targetRef')));
+  });
+
   return serializer.serializeToString(doc);
 }
 
