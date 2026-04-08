@@ -691,6 +691,12 @@ document.addEventListener('DOMContentLoaded', () => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') generate();
   });
 });
+// グローバルに公開
+window.loadExample = loadExample;
+window.generate = generate;
+window.copyXml = copyXml;
+window.fitView = fitView;
+
 </script>
 </body>
 </html>
