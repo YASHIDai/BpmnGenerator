@@ -679,11 +679,78 @@ async function applyAutoLayout(xml) {
     const module = await import(
       'https://unpkg.com/yet-another-bpmn-auto-layout@2.0.0/dist/index.js'
     );
-    return await module.layoutProcess(xml);
+    let result = await module.layoutProcess(xml);
+
+    // 縦レイアウト → 横レイアウトに変換
+    result = convertToHorizontal(result);
+
+    return result;
   } catch(e) {
     console.warn('autoLayout failed:', e);
     return xml;
   }
+}
+
+function convertToHorizontal(xml) {
+  const parser = new DOMParser();
+  const serializer = new XMLSerializer();
+  const doc = parser.parseFromString(xml, 'application/xml');
+
+  // 全BPMNShapeのBoundsを縦横入れ替え
+  const shapes = doc.querySelectorAll('BPMNShape');
+
+  // 全体の最大座標を取得（キャンバスサイズ把握用）
+  let maxX = 0, maxY = 0;
+  shapes.forEach(shape => {
+    const bounds = shape.querySelector('Bounds');
+    if (!bounds) return;
+    const x = parseFloat(bounds.getAttribute('x') || 0);
+    const y = parseFloat(bounds.getAttribute('y') || 0);
+    const w = parseFloat(bounds.getAttribute('width') || 0);
+    const h = parseFloat(bounds.getAttribute('height') || 0);
+    maxX = Math.max(maxX, x + w);
+    maxY = Math.max(maxY, y + h);
+  });
+
+  // BPMNShape の座標・サイズを縦横入れ替え
+  shapes.forEach(shape => {
+    const bounds = shape.querySelector('Bounds');
+    if (!bounds) return;
+
+    const x = parseFloat(bounds.getAttribute('x'));
+    const y = parseFloat(bounds.getAttribute('y'));
+    const w = parseFloat(bounds.getAttribute('width'));
+    const h = parseFloat(bounds.getAttribute('height'));
+
+    bounds.setAttribute('x', y);
+    bounds.setAttribute('y', x);
+    bounds.setAttribute('width', h);
+    bounds.setAttribute('height', w);
+
+    // Participant・LaneにisHorizontal="true"を付与
+    const bpmnElement = shape.getAttribute('bpmnElement') || '';
+    const isParticipantOrLane =
+      doc.querySelector(`[id="${bpmnElement}"]`)?.localName === 'participant' ||
+      doc.querySelector(`[id="${bpmnElement}"]`)?.localName === 'lane';
+
+    if (isParticipantOrLane) {
+      shape.setAttribute('isHorizontal', 'true');
+    }
+  });
+
+  // BPMNEdge のwaypointも縦横入れ替え
+  const edges = doc.querySelectorAll('BPMNEdge');
+  edges.forEach(edge => {
+    const waypoints = edge.querySelectorAll('waypoint');
+    waypoints.forEach(wp => {
+      const x = parseFloat(wp.getAttribute('x'));
+      const y = parseFloat(wp.getAttribute('y'));
+      wp.setAttribute('x', y);
+      wp.setAttribute('y', x);
+    });
+  });
+
+  return serializer.serializeToString(doc);
 }
 
 
