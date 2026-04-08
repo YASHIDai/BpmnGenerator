@@ -696,133 +696,147 @@ function convertToHorizontal(xml) {
   const serializer = new XMLSerializer();
   const doc = parser.parseFromString(xml, 'application/xml');
 
-  const shapes = doc.querySelectorAll('BPMNShape');
+  const ns = 'http://www.omg.org/spec/BPMN/20100524/MODEL';
 
-  // ① Participantの元座標を収集（Y座標でソート）
-  const participantShapes = [];
-  shapes.forEach(shape => {
-    const bpmnElement = shape.getAttribute('bpmnElement') || '';
-    const elem = doc.querySelector(`[id="${bpmnElement}"]`);
-    if (!elem || elem.localName !== 'participant') return;
-    const bounds = shape.querySelector('Bounds');
-    if (!bounds) return;
-    participantShapes.push({
-      shape,
-      elem,
-      id: bpmnElement,
-      origX: parseFloat(bounds.getAttribute('x')),
-      origY: parseFloat(bounds.getAttribute('y')),
-      origW: parseFloat(bounds.getAttribute('width')),
-      origH: parseFloat(bounds.getAttribute('height')),
-    });
-  });
-
-  // Y座標でソート（上から順）
-  participantShapes.sort((a, b) => a.origY - b.origY);
-
-  // ② Participantを縦に積み直す
-  let currentY = 0;
-  const participantNewBounds = new Map();
-  participantShapes.forEach(p => {
-    const newW = p.origW; // widthはそのまま
-    const newH = p.origH; // heightはそのまま
-    participantNewBounds.set(p.id, {
-      x: 0,
-      y: currentY,
-      w: newW,
-      h: newH,
-    });
-    currentY += newH + 70;
-  });
-
-  // ③ ParticipantのprocessRefからlaneSetを取得するヘルパー
-  function getParticipantIdForLane(laneId) {
-    // laneの親processを探す
-    const lane = doc.querySelector(`[id="${laneId}"]`);
-    if (!lane) return null;
-    const process = lane.closest('process') || lane.parentElement?.closest('[id]');
-    if (!process) return null;
-    const processId = process.getAttribute('id');
-    // そのprocessRefを持つparticipantを探す
-    const participant = doc.querySelector(`[processRef="${processId}"]`);
-    return participant ? participant.getAttribute('id') : null;
-  }
-
-  // ④ 全BPMNShapeを処理
-  shapes.forEach(shape => {
-    const bpmnElement = shape.getAttribute('bpmnElement') || '';
-    const elem = doc.querySelector(`[id="${bpmnElement}"]`);
-    if (!elem) return;
+  // ① 全BPMNShapeのBoundsをX↔Y入れ替え
+  doc.querySelectorAll('BPMNShape').forEach(shape => {
     const bounds = shape.querySelector('Bounds');
     if (!bounds) return;
 
-    const localName = elem.localName;
     const x = parseFloat(bounds.getAttribute('x'));
     const y = parseFloat(bounds.getAttribute('y'));
     const w = parseFloat(bounds.getAttribute('width'));
     const h = parseFloat(bounds.getAttribute('height'));
 
-    if (localName === 'participant') {
-      // Participant：縦積み座標を適用
-      const nb = participantNewBounds.get(bpmnElement);
-      bounds.setAttribute('x', nb.x);
-      bounds.setAttribute('y', nb.y);
-      bounds.setAttribute('width', nb.w);
-      bounds.setAttribute('height', nb.h);
-      shape.setAttribute('isHorizontal', 'true');
+    // X↔Y、Width↔Height を入れ替え
+    bounds.setAttribute('x', y);
+    bounds.setAttribute('y', x);
+    bounds.setAttribute('width', h);
+    bounds.setAttribute('height', w);
 
-    } else if (localName === 'lane') {
-      // Lane：Participantのy座標を基準に補正
-      const participantId = getParticipantIdForLane(bpmnElement);
-      const nb = participantId ? participantNewBounds.get(participantId) : null;
-      const offsetY = nb ? nb.y : 0;
+    // Participant・Lane に isHorizontal="true" を付与
+    const bpmnElementId = shape.getAttribute('bpmnElement') || '';
+    const elem =
+      doc.querySelector(`*|participant[id="${bpmnElementId}"]`) ||
+      doc.querySelector(`*|lane[id="${bpmnElementId}"]`) ||
+      doc.querySelector(`[id="${bpmnElementId}"]`);
 
-      // LaneはParticipant内のY相対座標を維持しつつ絶対座標に変換
-      bounds.setAttribute('x', x);
-      bounds.setAttribute('y', y + offsetY);
-      bounds.setAttribute('width', w);
-      bounds.setAttribute('height', h);
-      shape.setAttribute('isHorizontal', 'true');
-
-    } else {
-      // Task / Gateway / Event：Y座標にParticipantのオフセットを加算
-      // 所属するParticipantを特定
-      let offsetY = 0;
-      participantShapes.forEach(p => {
-        const nb = participantNewBounds.get(p.id);
-        if (!nb) return;
-        // 元のParticipantのY範囲内にある要素か判定
-        if (y >= p.origY && y <= p.origY + p.origH) {
-          offsetY = nb.y - p.origY;
-        }
-      });
-
-      bounds.setAttribute('x', x);
-      bounds.setAttribute('y', y + offsetY);
-      bounds.setAttribute('width', w);
-      bounds.setAttribute('height', h);
+    if (elem) {
+      const localName = elem.localName;
+      if (localName === 'participant' || localName === 'lane') {
+        shape.setAttribute('isHorizontal', 'true');
+      }
     }
   });
 
-  // ⑤ BPMNEdgeのwaypointもY座標を補正
-  const edges = doc.querySelectorAll('BPMNEdge');
-  edges.forEach(edge => {
-    const waypoints = edge.querySelectorAll('waypoint');
-    waypoints.forEach(wp => {
+  // ② 全BPMNEdgeのwaypointをX↔Y入れ替え
+  doc.querySelectorAll('BPMNEdge').forEach(edge => {
+    edge.querySelectorAll('waypoint').forEach(wp => {
       const x = parseFloat(wp.getAttribute('x'));
       const y = parseFloat(wp.getAttribute('y'));
+      wp.setAttribute('x', y);
+      wp.setAttribute('y', x);
+    });
+  });
 
-      let offsetY = 0;
-      participantShapes.forEach(p => {
-        const nb = participantNewBounds.get(p.id);
-        if (!nb) return;
-        if (y >= p.origY && y <= p.origY + p.origH) {
-          offsetY = nb.y - p.origY;
-        }
-      });
+  // ③ Participantを縦に並べ直す（X↔Y後にX座標が混在するため）
+  //    X↔Y後：Participantは x=origY, y=origX になっている
+  //    → x=0 に揃えて、y方向に順番に積み直す
+  const participantShapes = [];
+  doc.querySelectorAll('BPMNShape').forEach(shape => {
+    const bpmnElementId = shape.getAttribute('bpmnElement') || '';
+    const elem = doc.querySelector(`[id="${bpmnElementId}"]`);
+    if (!elem || elem.localName !== 'participant') return;
+    const bounds = shape.querySelector('Bounds');
+    if (!bounds) return;
+    participantShapes.push({
+      shape,
+      bounds,
+      id: bpmnElementId,
+      // X↔Y後の座標
+      newX: parseFloat(bounds.getAttribute('x')),
+      newY: parseFloat(bounds.getAttribute('y')),
+      newW: parseFloat(bounds.getAttribute('width')),
+      newH: parseFloat(bounds.getAttribute('height')),
+    });
+  });
 
-      wp.setAttribute('x', x);
-      wp.setAttribute('y', y + offsetY);
+  // X↔Y後のY座標でソート（元のX座標順 = 上から順）
+  participantShapes.sort((a, b) => a.newY - b.newY);
+
+  // 縦に積み直し
+  let currentY = 0;
+  const participantOffsets = new Map(); // id → { oldY, newY }
+  participantShapes.forEach(p => {
+    const oldY = p.newY; // X↔Y後のY（= 元のX）
+    participantOffsets.set(p.id, {
+      oldY: oldY,
+      newY: currentY,
+      deltaY: currentY - oldY,
+    });
+    p.bounds.setAttribute('x', 0);
+    p.bounds.setAttribute('y', currentY);
+    currentY += p.newH + 70;
+  });
+
+  // ④ Lane・要素・waypointのY座標をParticipantのずれ分だけ補正
+  //    どのParticipantに属するかをY座標の範囲で判定
+
+  function getDeltaY(y) {
+    for (const [, offset] of participantOffsets) {
+      // X↔Y後のParticipant範囲内か判定
+      if (y >= offset.oldY && y <= offset.oldY + 9999) {
+        return offset.deltaY;
+      }
+    }
+    return 0;
+  }
+
+  // Participantの正確な範囲を再計算
+  const participantRanges = [];
+  participantShapes.forEach(p => {
+    participantRanges.push({
+      id: p.id,
+      oldYMin: p.newY, // X↔Y後・積み直し前のY
+      oldYMax: p.newY + p.newH,
+      deltaY: participantOffsets.get(p.id).deltaY,
+    });
+  });
+
+  function getDeltaYByRange(y) {
+    for (const range of participantRanges) {
+      if (y >= range.oldYMin - 10 && y <= range.oldYMax + 10) {
+        return range.deltaY;
+      }
+    }
+    return 0;
+  }
+
+  // Lane・要素のY補正
+  doc.querySelectorAll('BPMNShape').forEach(shape => {
+    const bpmnElementId = shape.getAttribute('bpmnElement') || '';
+    const elem = doc.querySelector(`[id="${bpmnElementId}"]`);
+    if (!elem) return;
+    if (elem.localName === 'participant') return; // 既に処理済み
+
+    const bounds = shape.querySelector('Bounds');
+    if (!bounds) return;
+
+    const y = parseFloat(bounds.getAttribute('y'));
+    const delta = getDeltaYByRange(y);
+    if (delta !== 0) {
+      bounds.setAttribute('y', y + delta);
+    }
+  });
+
+  // waypointのY補正
+  doc.querySelectorAll('BPMNEdge').forEach(edge => {
+    edge.querySelectorAll('waypoint').forEach(wp => {
+      const y = parseFloat(wp.getAttribute('y'));
+      const delta = getDeltaYByRange(y);
+      if (delta !== 0) {
+        wp.setAttribute('y', y + delta);
+      }
     });
   });
 
