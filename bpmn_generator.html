@@ -673,6 +673,51 @@ async function generate() {
   }
 }
 
+// ============================================
+// SequenceFlow の outgoing/incoming を補完
+// ============================================
+function enrichSequenceFlows(xml) {
+  const parser = new DOMParser();
+  const serializer = new XMLSerializer();
+  const doc = parser.parseFromString(xml, 'application/xml');
+
+  doc.querySelectorAll('sequenceFlow').forEach(flow => {
+    const sourceId = flow.getAttribute('sourceRef');
+    const targetId = flow.getAttribute('targetRef');
+    const flowId   = flow.getAttribute('id');
+
+    // sourceRef の要素に <outgoing> を追加
+    const sourceElem = doc.querySelector(`[id="${sourceId}"]`);
+    if (sourceElem) {
+      const alreadyHas = [...sourceElem.querySelectorAll('outgoing')]
+        .some(o => o.textContent.trim() === flowId);
+      if (!alreadyHas) {
+        const outgoing = doc.createElementNS(
+          sourceElem.namespaceURI, 'bpmn2:outgoing'
+        );
+        outgoing.textContent = flowId;
+        sourceElem.appendChild(outgoing);
+      }
+    }
+
+    // targetRef の要素に <incoming> を追加
+    const targetElem = doc.querySelector(`[id="${targetId}"]`);
+    if (targetElem) {
+      const alreadyHas = [...targetElem.querySelectorAll('incoming')]
+        .some(i => i.textContent.trim() === flowId);
+      if (!alreadyHas) {
+        const incoming = doc.createElementNS(
+          targetElem.namespaceURI, 'bpmn2:incoming'
+        );
+        incoming.textContent = flowId;
+        targetElem.appendChild(incoming);
+      }
+    }
+  });
+
+  return serializer.serializeToString(doc);
+}
+  
 // bpmn-auto-layoutを使った自動レイアウト
 async function applyAutoLayout(xml) {
   try {
