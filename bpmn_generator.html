@@ -910,18 +910,9 @@ function fixCrossLaneXPositions(xml) {
   const diNs = 'http://www.omg.org/spec/DD/20100524/DI';
   const MARGIN = 40;
   const LANE_LABEL_WIDTH = 30;
+  const START_X = 80; // Lane内の開始X座標（ラベル幅分）
 
-  // ① 全SequenceFlowを収集
-  const flows = [];
-  doc.querySelectorAll('sequenceFlow').forEach(flow => {
-    flows.push({
-      id:        flow.getAttribute('id'),
-      sourceRef: flow.getAttribute('sourceRef'),
-      targetRef: flow.getAttribute('targetRef'),
-    });
-  });
-
-  // ② ノードのBoundsをDOMから直接読み書きするヘルパー
+  // ① Boundsの読み書きヘルパー
   function getBounds(nodeId) {
     const shape = doc.querySelector(`BPMNShape[bpmnElement="${nodeId}"]`);
     if (!shape) return null;
@@ -932,19 +923,19 @@ function fixCrossLaneXPositions(xml) {
       y: parseFloat(b.getAttribute('y')),
       w: parseFloat(b.getAttribute('width')),
       h: parseFloat(b.getAttribute('height')),
-      _bounds: b,
     };
   }
 
-  function setX(nodeId, newX) {
+  function setBounds(nodeId, x, y) {
     const shape = doc.querySelector(`BPMNShape[bpmnElement="${nodeId}"]`);
     if (!shape) return;
     const b = shape.querySelector('Bounds');
     if (!b) return;
-    b.setAttribute('x', newX);
+    if (x !== null) b.setAttribute('x', x);
+    if (y !== null) b.setAttribute('y', y);
   }
 
-  // ③ 各プロセスごとに処理
+  // ② 各プロセスごとに処理
   doc.querySelectorAll('process').forEach(process => {
 
     // このプロセス内の全ノードIDを収集
@@ -953,7 +944,7 @@ function fixCrossLaneXPositions(xml) {
       'startEvent','endEvent','userTask','exclusiveGateway',
       'parallelGateway','serviceTask','scriptTask','manualTask',
       'sendTask','receiveTask','intermediateThrowEvent',
-      'intermediateCatchEvent','boundaryEvent','subProcess'
+      'intermediateCatchEvent','subProcess'
     ];
     tags.forEach(tag => {
       process.querySelectorAll(tag).forEach(e => {
@@ -961,16 +952,20 @@ function fixCrossLaneXPositions(xml) {
       });
     });
 
-    // このプロセス内のフローのみ抽出
-    const processFlows = flows.filter(f =>
-      nodeIds.has(f.sourceRef) && nodeIds.has(f.targetRef)
-    );
+    // このプロセス内のSequenceFlowのみ抽出
+    const processFlows = [];
+    doc.querySelectorAll('sequenceFlow').forEach(flow => {
+      const src = flow.getAttribute('sourceRef');
+      const tgt = flow.getAttribute('targetRef');
+      if (nodeIds.has(src) && nodeIds.has(tgt)) {
+        processFlows.push({ id: flow.getAttribute('id'), sourceRef: src, targetRef: tgt });
+      }
+    });
 
-    // ④ トポロジカルソート（Kahnのアルゴリズム）
-    const inDegree = new Map();
-    const outEdges = new Map();
+    // ③ トポロジカルソート（Kahnのアルゴリズム）
+    const inDegree  = new Map();
+    const outEdges  = new Map();
     nodeIds.forEach(id => { inDegree.set(id, 0); outEdges.set(id, []); });
-
     processFlows.forEach(f => {
       inDegree.set(f.targetRef, (inDegree.get(f.targetRef) || 0) + 1);
       outEdges.get(f.sourceRef).push(f.targetRef);
@@ -992,40 +987,50 @@ function fixCrossLaneXPositions(xml) {
         if (newDeg <= 0 && !visited.has(next)) queue.push(next);
       });
     }
-
     // 未訪問ノード（ループ内）も末尾に追加
     nodeIds.forEach(id => { if (!visited.has(id)) topoOrder.push(id); });
 
-    // ⑤ トポロジカル順にX座標を補正
-    //    source の右端 + MARGIN > target の左端 なら target を右にずらす
-    processFlows.forEach(f => {
-      const src = getBounds(f.sourceRef);
-      const tgt = getBounds(f.targetRef);
-      if (!src || !tgt) return;
+    // ④ ★ Lane別にノードを分類してX座標を振り直す
+    const laneNodes = new Map(); // laneId → [nodeId, ...]（トポロジカル順）
+    const noLaneNodes = [];
 
-      const requiredX = src.x + src.w + MARGIN;
-      if (requiredX <= tgt.x) return; // すでに十分な間隔がある
+    process.querySelectorAll('lane').forEach(lane => {
+      const laneId = lane.getAttribute('id');
+      const refs = [...lane.querySelectorAll('flowNodeRef')]
+        .map(r => r.textContent.trim());
+      // トポロジカル順を維持しながらLane内ノードを並べる
+      const ordered = topoOrder.filter(id => refs.includes(id));
+      // トポロジカル順に含まれなかったノードも末尾に追加
+      refs.forEach(id => { if (!ordered.includes(id)) ordered.push(id); });
+      laneNodes.set(laneId, ordered);
+    });
 
-      const delta = requiredX - tgt.x;
+    // Lane内ノードのX座標を振り直す
+    laneNodes.forEach((nodeList, laneId) => {
+      const laneShape = doc.querySelector(`BPMNShape[bpmnElement="${laneId}"]`);
+      if (!laneShape) return;
+      const lb = laneShape.querySelector('Bounds');
+      const laneX = parseFloat(lb.getAttribute('x'));
+      const laneY = parseFloat(lb.getAttribute('y'));
+      const laneH = parseFloat(lb.getAttribute('height'));
 
-      // targetと同じLane内で、targetのX座標以上の全ノードをずらす
-      const targetLane = getLaneOfNode(doc, f.targetRef);
+      let currentX = laneX + START_X;
 
-      const nodesToShift = new Set();
-      if (targetLane) {
-        targetLane.querySelectorAll('flowNodeRef').forEach(ref => {
-          const nid = ref.textContent.trim();
-          const nb = getBounds(nid);
-          if (nb && nb.x >= tgt.x - 1) nodesToShift.add(nid);
-        });
-      } else {
-        nodesToShift.add(f.targetRef);
-      }
+      nodeList.forEach(nodeId => {
+        const b = getBounds(nodeId);
+        if (!b) return;
 
-      nodesToShift.forEach(nid => {
-        const nb = getBounds(nid);
-        if (nb) setX(nid, nb.x + delta);
+        const nodeY = laneY + (laneH - b.h) / 2; // Lane内垂直中央
+        setBounds(nodeId, currentX, nodeY);
+        currentX += b.w + MARGIN;
       });
+    });
+
+    // ⑤ Lane外ノード（外部プロセス等）はSequenceFlowを辿ってX補正
+    // トポロジカル順にsource右端+MARGIN > target左端 なら右にずらす
+    topoOrder.forEach(nodeId => {
+      if ([...laneNodes.values()].some(list => list.includes(nodeId))) return;
+      // Lane外ノードはそのまま（外部プロセスは別途処理）
     });
   });
 
@@ -1040,7 +1045,6 @@ function fixCrossLaneXPositions(xml) {
     if (!pShape) return;
     const pBounds = pShape.querySelector('Bounds');
 
-    // 全ノードの最大X座標を取得
     let maxRight = 0;
     const tags = [
       'startEvent','endEvent','userTask','exclusiveGateway',
@@ -1058,18 +1062,16 @@ function fixCrossLaneXPositions(xml) {
     const newWidth = maxRight + 80;
     pBounds.setAttribute('width', newWidth);
 
-    // Lane幅も同期
     process.querySelectorAll('lane').forEach(lane => {
       const laneShape = doc.querySelector(
         `BPMNShape[bpmnElement="${lane.getAttribute('id')}"]`
       );
       if (!laneShape) return;
-      const lb = laneShape.querySelector('Bounds');
-      lb.setAttribute('width', newWidth - LANE_LABEL_WIDTH);
+      laneShape.querySelector('Bounds').setAttribute('width', newWidth - LANE_LABEL_WIDTH);
     });
   });
 
-  // ⑦ 全Edgeのwaypoint再計算（L字）
+  // ⑦ 全Edgeのwaypoint再計算
   const shapeBounds = collectShapeBounds(doc);
 
   doc.querySelectorAll('BPMNEdge').forEach(edge => {
@@ -1081,9 +1083,21 @@ function fixCrossLaneXPositions(xml) {
       const tgt = shapeBounds.get(seqFlow.getAttribute('targetRef'));
       if (src && tgt) {
         [...edge.querySelectorAll('waypoint')].forEach(wp => wp.remove());
-        calcLWaypoints(src, tgt).forEach(p => {
+
+        // ★ 同一Lane内なら直線、異なるLane間ならL字
+        const srcLane = getLaneOfNode(doc, seqFlow.getAttribute('sourceRef'));
+        const tgtLane = getLaneOfNode(doc, seqFlow.getAttribute('targetRef'));
+        const isSameLane = srcLane && tgtLane &&
+          srcLane.getAttribute('id') === tgtLane.getAttribute('id');
+
+        const points = isSameLane
+          ? calcStraightWaypoints(src, tgt)   // 直線
+          : calcLWaypoints(src, tgt);          // L字
+
+        points.forEach(p => {
           const wp = doc.createElementNS(diNs, 'di:waypoint');
-          wp.setAttribute('x', p.x); wp.setAttribute('y', p.y);
+          wp.setAttribute('x', p.x);
+          wp.setAttribute('y', p.y);
           edge.appendChild(wp);
         });
       }
@@ -1098,7 +1112,8 @@ function fixCrossLaneXPositions(xml) {
         [...edge.querySelectorAll('waypoint')].forEach(wp => wp.remove());
         calcMessageFlowWaypoints(src, tgt).forEach(p => {
           const wp = doc.createElementNS(diNs, 'di:waypoint');
-          wp.setAttribute('x', p.x); wp.setAttribute('y', p.y);
+          wp.setAttribute('x', p.x);
+          wp.setAttribute('y', p.y);
           edge.appendChild(wp);
         });
       }
@@ -1106,6 +1121,20 @@ function fixCrossLaneXPositions(xml) {
   });
 
   return serializer.serializeToString(doc);
+}
+
+// ============================================
+// 直線waypoint（同一Lane内用）
+// ============================================
+function calcStraightWaypoints(source, target) {
+  const sx = source.x + source.w;        // ソース右端
+  const sy = source.y + source.h / 2;    // ソース中央Y
+  const tx = target.x;                   // ターゲット左端
+  const ty = target.y + target.h / 2;   // ターゲット中央Y
+  return [
+    { x: sx, y: sy },
+    { x: tx, y: ty },
+  ];
 }
 
 // ノードが属するlane要素を返す
