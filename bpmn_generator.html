@@ -907,190 +907,198 @@ function fixCrossLaneXPositions(xml) {
   const parser = new DOMParser();
   const serializer = new XMLSerializer();
   const doc = parser.parseFromString(xml, 'application/xml');
+  const diNs = 'http://www.omg.org/spec/DD/20100524/DI';
+  const MARGIN = 40;
+  const LANE_LABEL_WIDTH = 30;
 
   // ① 全SequenceFlowを収集
-  const flows = new Map(); // id → { sourceRef, targetRef }
+  const flows = [];
   doc.querySelectorAll('sequenceFlow').forEach(flow => {
-    flows.set(flow.getAttribute('id'), {
+    flows.push({
+      id:        flow.getAttribute('id'),
       sourceRef: flow.getAttribute('sourceRef'),
       targetRef: flow.getAttribute('targetRef'),
     });
   });
 
-  // ② shapeBoundsを収集
-  const shapeBounds = collectShapeBounds(doc);
-
-  // ③ 各要素がどのLaneに属するか収集
-  const nodeToLane = new Map(); // nodeId → laneId
-  doc.querySelectorAll('lane').forEach(lane => {
-    const laneId = lane.getAttribute('id');
-    lane.querySelectorAll('flowNodeRef').forEach(ref => {
-      nodeToLane.set(ref.textContent.trim(), laneId);
-    });
-  });
-
-  // ④ Laneのboundsを収集
-  const laneBounds = new Map(); // laneId → { x, y, w, h }
-  doc.querySelectorAll('BPMNShape').forEach(shape => {
-    const id = shape.getAttribute('bpmnElement');
-    const elem = doc.querySelector(`lane[id="${id}"]`);
-    if (!elem) return;
+  // ② ノードのBoundsをDOMから直接読み書きするヘルパー
+  function getBounds(nodeId) {
+    const shape = doc.querySelector(`BPMNShape[bpmnElement="${nodeId}"]`);
+    if (!shape) return null;
     const b = shape.querySelector('Bounds');
-    if (!b) return;
-    laneBounds.set(id, {
+    if (!b) return null;
+    return {
       x: parseFloat(b.getAttribute('x')),
       y: parseFloat(b.getAttribute('y')),
       w: parseFloat(b.getAttribute('width')),
       h: parseFloat(b.getAttribute('height')),
+      _bounds: b,
+    };
+  }
+
+  function setX(nodeId, newX) {
+    const shape = doc.querySelector(`BPMNShape[bpmnElement="${nodeId}"]`);
+    if (!shape) return;
+    const b = shape.querySelector('Bounds');
+    if (!b) return;
+    b.setAttribute('x', newX);
+  }
+
+  // ③ 各プロセスごとに処理
+  doc.querySelectorAll('process').forEach(process => {
+
+    // このプロセス内の全ノードIDを収集
+    const nodeIds = new Set();
+    const tags = [
+      'startEvent','endEvent','userTask','exclusiveGateway',
+      'parallelGateway','serviceTask','scriptTask','manualTask',
+      'sendTask','receiveTask','intermediateThrowEvent',
+      'intermediateCatchEvent','boundaryEvent','subProcess'
+    ];
+    tags.forEach(tag => {
+      process.querySelectorAll(tag).forEach(e => {
+        nodeIds.add(e.getAttribute('id'));
+      });
+    });
+
+    // このプロセス内のフローのみ抽出
+    const processFlows = flows.filter(f =>
+      nodeIds.has(f.sourceRef) && nodeIds.has(f.targetRef)
+    );
+
+    // ④ トポロジカルソート（Kahnのアルゴリズム）
+    const inDegree = new Map();
+    const outEdges = new Map();
+    nodeIds.forEach(id => { inDegree.set(id, 0); outEdges.set(id, []); });
+
+    processFlows.forEach(f => {
+      inDegree.set(f.targetRef, (inDegree.get(f.targetRef) || 0) + 1);
+      outEdges.get(f.sourceRef).push(f.targetRef);
+    });
+
+    const queue = [];
+    inDegree.forEach((deg, id) => { if (deg === 0) queue.push(id); });
+
+    const topoOrder = [];
+    const visited = new Set();
+    while (queue.length > 0) {
+      const node = queue.shift();
+      if (visited.has(node)) continue;
+      visited.add(node);
+      topoOrder.push(node);
+      (outEdges.get(node) || []).forEach(next => {
+        const newDeg = (inDegree.get(next) || 1) - 1;
+        inDegree.set(next, newDeg);
+        if (newDeg <= 0 && !visited.has(next)) queue.push(next);
+      });
+    }
+
+    // 未訪問ノード（ループ内）も末尾に追加
+    nodeIds.forEach(id => { if (!visited.has(id)) topoOrder.push(id); });
+
+    // ⑤ トポロジカル順にX座標を補正
+    //    source の右端 + MARGIN > target の左端 なら target を右にずらす
+    processFlows.forEach(f => {
+      const src = getBounds(f.sourceRef);
+      const tgt = getBounds(f.targetRef);
+      if (!src || !tgt) return;
+
+      const requiredX = src.x + src.w + MARGIN;
+      if (requiredX <= tgt.x) return; // すでに十分な間隔がある
+
+      const delta = requiredX - tgt.x;
+
+      // targetと同じLane内で、targetのX座標以上の全ノードをずらす
+      const targetLane = getLaneOfNode(doc, f.targetRef);
+
+      const nodesToShift = new Set();
+      if (targetLane) {
+        targetLane.querySelectorAll('flowNodeRef').forEach(ref => {
+          const nid = ref.textContent.trim();
+          const nb = getBounds(nid);
+          if (nb && nb.x >= tgt.x - 1) nodesToShift.add(nid);
+        });
+      } else {
+        nodesToShift.add(f.targetRef);
+      }
+
+      nodesToShift.forEach(nid => {
+        const nb = getBounds(nid);
+        if (nb) setX(nid, nb.x + delta);
+      });
     });
   });
 
-  // ⑤ トポロジカル順序でX座標を補正
-  //    SequenceFlowを辿り、source.x + source.w + margin > target.x なら
-  //    target以降を右にずらす
-  const MARGIN = 40; // 要素間の最小間隔
-  const MAX_ITER = 50; // 最大反復回数（循環フロー対策）
-
-  for (let iter = 0; iter < MAX_ITER; iter++) {
-    let changed = false;
-
-    flows.forEach(({ sourceRef, targetRef }) => {
-      const source = shapeBounds.get(sourceRef);
-      const target = shapeBounds.get(targetRef);
-      if (!source || !target) return;
-
-      // sourceの右端 + MARGIN がtargetの左端より右にある場合
-      const requiredX = source.x + source.w + MARGIN;
-      if (requiredX > target.x) {
-        const delta = requiredX - target.x;
-
-        // targetと同じLane内で、targetのX座標以上の要素を全て右にずらす
-        const targetLaneId = nodeToLane.get(targetRef);
-        const targetLane = targetLaneId
-          ? doc.querySelector(`lane[id="${targetLaneId}"]`)
-          : null;
-
-        // ずらす対象ノードを収集（同一Lane内でtarget.x以上）
-        const nodesToShift = new Set();
-
-        if (targetLane) {
-          targetLane.querySelectorAll('flowNodeRef').forEach(ref => {
-            const nodeId = ref.textContent.trim();
-            const nb = shapeBounds.get(nodeId);
-            if (nb && nb.x >= target.x - 1) {
-              nodesToShift.add(nodeId);
-            }
-          });
-        } else {
-          // Laneなし（外部プロセス）の場合はtarget単体のみ
-          nodesToShift.add(targetRef);
-        }
-
-        // 実際にBoundsを更新
-        nodesToShift.forEach(nodeId => {
-          const nb = shapeBounds.get(nodeId);
-          if (!nb) return;
-          const shape = doc.querySelector(`BPMNShape[bpmnElement="${nodeId}"]`);
-          if (!shape) return;
-          const bounds = shape.querySelector('Bounds');
-          if (!bounds) return;
-
-          nb.x += delta;
-          bounds.setAttribute('x', nb.x);
-          changed = true;
-        });
-      }
-    });
-
-    if (!changed) break;
-  }
-
-  // ⑥ Participantの幅を要素の最大X座標に合わせて拡張
+  // ⑥ Participant・Lane幅を最大X座標に合わせて拡張
   doc.querySelectorAll('[processRef]').forEach(participant => {
     const participantId = participant.getAttribute('id');
     const processRef    = participant.getAttribute('processRef');
     const process       = doc.querySelector(`[id="${processRef}"]`);
     if (!process) return;
 
-    const participantShape = doc.querySelector(
-      `BPMNShape[bpmnElement="${participantId}"]`
-    );
-    if (!participantShape) return;
-    const pBounds = participantShape.querySelector('Bounds');
+    const pShape = doc.querySelector(`BPMNShape[bpmnElement="${participantId}"]`);
+    if (!pShape) return;
+    const pBounds = pShape.querySelector('Bounds');
 
-    // このParticipant内の全要素の最大X座標を取得
-    let maxX = 0;
-    const allNodeIds = new Set();
-
-    // Lane内の要素
-    process.querySelectorAll('flowNodeRef').forEach(ref => {
-      allNodeIds.add(ref.textContent.trim());
-    });
-    // Lane外の要素（外部プロセス等）
-    ['startEvent','endEvent','userTask','exclusiveGateway',
-     'parallelGateway','serviceTask','scriptTask'].forEach(tag => {
-      process.querySelectorAll(tag).forEach(elem => {
-        allNodeIds.add(elem.getAttribute('id'));
+    // 全ノードの最大X座標を取得
+    let maxRight = 0;
+    const tags = [
+      'startEvent','endEvent','userTask','exclusiveGateway',
+      'parallelGateway','serviceTask','scriptTask','manualTask',
+      'sendTask','receiveTask'
+    ];
+    tags.forEach(tag => {
+      process.querySelectorAll(tag).forEach(e => {
+        const b = getBounds(e.getAttribute('id'));
+        if (b) maxRight = Math.max(maxRight, b.x + b.w);
       });
     });
 
-    allNodeIds.forEach(nodeId => {
-      const nb = shapeBounds.get(nodeId);
-      if (nb) maxX = Math.max(maxX, nb.x + nb.w);
+    if (maxRight === 0) return;
+    const newWidth = maxRight + 80;
+    pBounds.setAttribute('width', newWidth);
+
+    // Lane幅も同期
+    process.querySelectorAll('lane').forEach(lane => {
+      const laneShape = doc.querySelector(
+        `BPMNShape[bpmnElement="${lane.getAttribute('id')}"]`
+      );
+      if (!laneShape) return;
+      const lb = laneShape.querySelector('Bounds');
+      lb.setAttribute('width', newWidth - LANE_LABEL_WIDTH);
     });
-
-    if (maxX > 0) {
-      const newWidth = maxX + 80; // 右マージン
-      pBounds.setAttribute('width', newWidth);
-
-      // Lane幅も同期
-      const lanes = process.querySelectorAll('lane');
-      lanes.forEach(lane => {
-        const laneId = lane.getAttribute('id');
-        const laneShape = doc.querySelector(`BPMNShape[bpmnElement="${laneId}"]`);
-        if (!laneShape) return;
-        const lb = laneShape.querySelector('Bounds');
-        const pX = parseFloat(pBounds.getAttribute('x'));
-        lb.setAttribute('width', newWidth - 30);
-      });
-    }
   });
 
-  // ⑦ waypoint再計算（L字）
-  const updatedBounds = collectShapeBounds(doc);
-  const diNs = 'http://www.omg.org/spec/DD/20100524/DI';
+  // ⑦ 全Edgeのwaypoint再計算（L字）
+  const shapeBounds = collectShapeBounds(doc);
 
   doc.querySelectorAll('BPMNEdge').forEach(edge => {
-    const bpmnElementId = edge.getAttribute('bpmnElement');
+    const eid = edge.getAttribute('bpmnElement');
 
-    // SequenceFlow
-    const seqFlow = doc.querySelector(`sequenceFlow[id="${bpmnElementId}"]`);
+    const seqFlow = doc.querySelector(`sequenceFlow[id="${eid}"]`);
     if (seqFlow) {
-      const source = updatedBounds.get(seqFlow.getAttribute('sourceRef'));
-      const target = updatedBounds.get(seqFlow.getAttribute('targetRef'));
-      if (source && target) {
+      const src = shapeBounds.get(seqFlow.getAttribute('sourceRef'));
+      const tgt = shapeBounds.get(seqFlow.getAttribute('targetRef'));
+      if (src && tgt) {
         [...edge.querySelectorAll('waypoint')].forEach(wp => wp.remove());
-        calcLWaypoints(source, target).forEach(p => {
+        calcLWaypoints(src, tgt).forEach(p => {
           const wp = doc.createElementNS(diNs, 'di:waypoint');
-          wp.setAttribute('x', p.x);
-          wp.setAttribute('y', p.y);
+          wp.setAttribute('x', p.x); wp.setAttribute('y', p.y);
           edge.appendChild(wp);
         });
       }
       return;
     }
 
-    // MessageFlow
-    const msgFlow = doc.querySelector(`messageFlow[id="${bpmnElementId}"]`);
+    const msgFlow = doc.querySelector(`messageFlow[id="${eid}"]`);
     if (msgFlow) {
-      const source = updatedBounds.get(msgFlow.getAttribute('sourceRef'));
-      const target = updatedBounds.get(msgFlow.getAttribute('targetRef'));
-      if (source && target) {
+      const src = shapeBounds.get(msgFlow.getAttribute('sourceRef'));
+      const tgt = shapeBounds.get(msgFlow.getAttribute('targetRef'));
+      if (src && tgt) {
         [...edge.querySelectorAll('waypoint')].forEach(wp => wp.remove());
-        calcMessageFlowWaypoints(source, target).forEach(p => {
+        calcMessageFlowWaypoints(src, tgt).forEach(p => {
           const wp = doc.createElementNS(diNs, 'di:waypoint');
-          wp.setAttribute('x', p.x);
-          wp.setAttribute('y', p.y);
+          wp.setAttribute('x', p.x); wp.setAttribute('y', p.y);
           edge.appendChild(wp);
         });
       }
@@ -1098,6 +1106,17 @@ function fixCrossLaneXPositions(xml) {
   });
 
   return serializer.serializeToString(doc);
+}
+
+// ノードが属するlane要素を返す
+function getLaneOfNode(doc, nodeId) {
+  const lanes = doc.querySelectorAll('lane');
+  for (const lane of lanes) {
+    const refs = [...lane.querySelectorAll('flowNodeRef')]
+      .map(r => r.textContent.trim());
+    if (refs.includes(nodeId)) return lane;
+  }
+  return null;
 }
   
 // ============================================
