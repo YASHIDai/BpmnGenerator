@@ -207,7 +207,7 @@ function initViewer() {
 
 function initModeler() {
   if (modeler) return;
-  modeler = new BpmnJS({ container: '#bpmn-container' });
+  modeler = new BpmnModeler({ container: '#bpmn-container' });
   modeler.on('commandStack.changed', async () => {
     try {
       const { xml } = await modeler.saveXML({ format: true });
@@ -268,6 +268,10 @@ window.relayout = async function() {
     if (currentMode === 'edit' && modeler) {
       try { const r = await modeler.saveXML({ format: true }); xml = r.xml; } catch(e){}
     }
+    // DI情報を除いたBPMN構造部分のみをapplyLayoutに渡す
+    // modeler.saveXML()はbpmn-jsが付与したDI（座標）を含むため
+    // そのままapplyLayoutに渡すとDI削除が不完全な場合に異常値が残る
+    xml = stripDiFromXml(xml);
     const laid = applyLayout(xml);
     await displayXml(laid, currentMode);
     setStatus(currentMode === 'edit' ? 'edit' : 'active', '再レイアウト完了');
@@ -380,6 +384,28 @@ window.addEventListener('load', () => {
 });
 
 // ================================================================
+// BPMN XMLからDI情報（BPMNDiagram）を除去して構造部分のみを返す
+// modeler.saveXML()の出力はbpmn-jsが付与したDIを含むため
+// applyLayout()に渡す前に必ず除去する
+// ================================================================
+function stripDiFromXml(xmlStr) {
+  try {
+    const parser=new DOMParser();
+    const doc=parser.parseFromString(xmlStr,'application/xml');
+    const NS_BPMNDI='http://www.omg.org/spec/BPMN/20100524/DI';
+    const toRemove=[
+      ...doc.getElementsByTagNameNS(NS_BPMNDI,'BPMNDiagram'),
+      ...doc.querySelectorAll('BPMNDiagram'),
+    ];
+    [...new Set(toRemove)].forEach(d=>{ try{d.parentNode?.removeChild(d);}catch(e){} });
+    return new XMLSerializer().serializeToString(doc);
+  } catch(e) {
+    // パース失敗時はそのまま返す
+    return xmlStr;
+  }
+}
+
+// ================================================================
 //  BPMN レイアウトエンジン（全10フェーズ）
 //  アルゴリズム仕様:
 //  F0: 前処理（ノード・フロー収集）
@@ -424,8 +450,14 @@ function applyLayout(xmlStr) {
   const parser=new DOMParser(), serializer=new XMLSerializer();
   const doc=parser.parseFromString(xmlStr,'application/xml');
 
-  // 既存DIを削除
-  [...doc.querySelectorAll('BPMNDiagram')].forEach(d=>d.remove());
+  // 既存DIを確実に削除（名前空間を使った削除で取りこぼしを防ぐ）
+  const NS_BPMNDI_CHECK='http://www.omg.org/spec/BPMN/20100524/DI';
+  const diagramsToRemove=[
+    ...doc.getElementsByTagNameNS(NS_BPMNDI_CHECK,'BPMNDiagram'),
+    ...doc.querySelectorAll('BPMNDiagram'),
+  ];
+  // 重複除去してから削除
+  [...new Set(diagramsToRemove)].forEach(d=>{ try{d.parentNode?.removeChild(d);}catch(e){} });
 
   const NS_DI='http://www.omg.org/spec/BPMN/20100524/DI';
   const NS_DC='http://www.omg.org/spec/DD/20100524/DC';
@@ -733,24 +765,27 @@ function applyLayout(xmlStr) {
     const parts=[...collab.querySelectorAll('participant')];
     const msgFlows=[...collab.querySelectorAll('messageFlow')];
 
-    // ---- 全ノードのlevelを統合計算 ----
-    // 各プロセスのBFSを実行→全てのlevelをマージ
+    // ---- 全ノードのlevelを計算（Participant独立） ----
+    // 各プロセスは独立してBFS・再伝播を実行する
+    // （Participantをまたいだlevel伝播は行わない：messageFlowによる
+    //   level過剰上昇を防ぐため）
     const globalLevel=new Map();
     const allSeqs=[];
     parts.forEach(part=>{
       const proc=doc.querySelector('process[id="'+part.getAttribute('processRef')+'"]');
       if(!proc) return;
       const {nodes,seqs,outMap,inMap}=collectProcess(proc);
+      // F1: BFS
       const lv=bfsLevels(nodes,seqs,outMap,inMap);
+      // F3: Participant内のsequenceFlowのみで再伝播（Participant内で収束させる）
+      propagate(seqs,lv);
       lv.forEach((v,k)=>globalLevel.set(k,v));
       seqs.forEach(s=>allSeqs.push(s));
     });
-
-    // F2: messageFlow制約（全Participant横断）
-    applyMsgConstraints(globalLevel,msgFlows,null);
-
-    // F3: 全sequenceFlow再伝播
-    propagate(allSeqs,globalLevel);
+    // F2: messageFlow制約は適用しない
+    // （messageFlowのsrc/tgtがParticipantをまたぐため
+    //   level制約を適用するとExt側のlevelがInt側の最大levelまで
+    //   押し上げられ、X座標が異常に大きくなる原因となる）
 
     // ---- 1パス目: 各Participantレイアウト ----
     let curY=0;
