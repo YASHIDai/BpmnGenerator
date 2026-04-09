@@ -207,7 +207,7 @@ function initViewer() {
 
 function initModeler() {
   if (modeler) return;
-  modeler = new BpmnModeler({ container: '#bpmn-container' });
+  modeler = new BpmnJS({ container: '#bpmn-container' });
   modeler.on('commandStack.changed', async () => {
     try {
       const { xml } = await modeler.saveXML({ format: true });
